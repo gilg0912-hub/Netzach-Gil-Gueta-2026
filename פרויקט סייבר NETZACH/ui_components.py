@@ -4,6 +4,7 @@ from auth_config import *
 import math
 import re
 from PIL import Image, ImageSequence
+import webbrowser
 
 class Field(ctk.CTkFrame):
 
@@ -53,8 +54,7 @@ class Field(ctk.CTkFrame):
         if chr_added ==" " or  len(future_txt) > self.max_len:
             return False
 
-        self.is_valid(future_txt)
-        self.after(10, lambda: self.callback(future_txt))
+        self.after(10, lambda: self.callback())
         return True
 
 
@@ -100,35 +100,41 @@ class Field(ctk.CTkFrame):
 
 
 class Screen(ctk.CTkFrame):
-
     def __init__(self, parent, title: str, field_types: list[FieldType], confirm_text: str = "Confirm", confirm_command=None, extra_btns=[], style :dict = ROLE_STYLES[UserRole.STANDARD]):
         super().__init__(parent, fg_color='transparent')
 
         self.is_valid_state=False
         self.lock=False
-        self.title_label = ctk.CTkLabel(self, text=title, font=("David", 30, "bold"), text_color= style.get(UIKey.TEXT_COLOR))
+        self.title_label = ctk.CTkLabel(self, text=title, font=("hebbo", 30, "bold"), text_color= style.get(UIKey.TEXT_COLOR))
         self.title_label.pack(pady=20, fill='x')
 
-        self.fields = {ft: Field(self, self.is_validate_fields, ft) for ft in field_types}
+        self.fields = {ft: Field(self, self.check_valid_fields, ft) for ft in field_types}
         self.confirm_btn=None
         for field in self.fields.values():
-            field.pack(pady=8, padx=25, fill="x")
+            field.pack(pady=15, padx=25, fill="x")
 
         for btn_conf in extra_btns:
             ctk.CTkButton(self, **btn_conf).pack(pady=10)
 
         if confirm_command:
-            self.confirm_btn= ctk.CTkButton(self,**STYLE_CTK, text_color= style.get(UIKey.TEXT_COLOR), border_color= style.get('border_color'), hover_color= style.get('hover_color'), text= confirm_text, command=confirm_command )
-            self.confirm_btn.configure(state="disabled")
+            self.confirm_btn= ctk.CTkButton(self,**STYLE_CTK, state= 'disabled', text_color= style.get(UIKey.TEXT_COLOR), border_color= style.get('border_color'), hover_color= style.get('hover_color'), text= confirm_text, command=confirm_command )
             self.confirm_btn.pack(pady=20)
 
-    def is_validate_fields(self, _=None):
-        is_valid_state = all(field.is_valid() for field in self.fields.values())
-        if self.lock:
+    def check_valid_fields(self):
+        if not self.confirm_btn:
             return
-        if self.is_valid_state!=is_valid_state and self.confirm_btn:
-            state = "normal" if is_valid_state else "disabled"
-            self.confirm_btn.configure(state=state)
+
+        self.is_valid_state = all(field.is_valid() for field in self.fields.values())
+        should_be_disabled = self.lock or not self.is_valid_state
+
+        current_state = self.confirm_btn.cget('state')
+
+        if should_be_disabled and current_state != 'disabled':
+            self.confirm_btn.configure(state='disabled')
+
+        elif not should_be_disabled and current_state != 'normal':
+            self.confirm_btn.configure(state='normal')
+
 
 
     def get_data(self):
@@ -149,7 +155,7 @@ class Loading(ctk.CTkFrame):
                           height=int(self.cget('height')))
 
         self.label = ctk.CTkLabel(self, text='', text_color="white",
-                                  font=('David', int(self.cget('height') * 0.4)))
+                                  font=('hebbo', int(self.cget('height') * 0.4)))
 
         self.wheel.pack(side='left', padx=5)
         self.label.pack(side='left', padx=5)
@@ -278,40 +284,79 @@ class AnimatedGifLabel(ctk.CTkLabel):
         super().grid(**kwargs)
         self._animate()
 
-class ScrollableSectionFrame(ctk.CTkFrame):
-    def __init__(self, parent, gui_state, chat_service, title_text, title_color="#B0903D", line_color="#B0903D", **kwargs):
-        # אתחול הפריים הראשי כקונטיינר מעוגל
-        super().__init__(parent, corner_radius=20, fg_color="#0D1B2A", border_width=1, border_color=line_color, **kwargs)
+class TopicCard(ctk.CTkFrame):
+    def __init__(self, master, title=None, summary=None, url=None, id =None,category=None, btn_configs=None, **kwargs):
+        super().__init__(master, corner_radius=15, fg_color=('white', "#1e293b"), border_width=2, border_color="#334155")
 
-        self.grid_rowconfigure(2, weight=1)
-        self.grid_columnconfigure(0, weight=1)
+        self.category = category
+        self.url = url
+        self.id = id
+        print(self.category)
+        self.cat_label = ctk.CTkLabel(
+            self, text=category, font=("Heebo", 10, "bold"),
+            fg_color=("#F1F5F9", "#334155"), text_color="#38bdf8", corner_radius=10
+        )
+        self.cat_label.pack(pady=(10, 0), padx=15, anchor="e")
 
         self.title_label = ctk.CTkLabel(
-            self,
-            text=title_text,
-            font=("Arial", 20, "bold"),
-            text_color=title_color,
-            fg_color="transparent"
+            self, text=title, font=("Heebo", 18, "bold"),
+            text_color="#f8fafc", wraplength=300, justify="right"
         )
-        self.title_label.grid(row=0, column=0, sticky="ew", pady=(15, 5), padx=2)
+        self.title_label.pack(pady=(15, 5), padx=15, anchor="e")
 
-        # 2. קו הפרדה (Separator)
-        self.line_separator = ctk.CTkFrame(
-            self,
-            height=2,
-            fg_color=line_color,
-            corner_radius=0
+        self.summary_label = ctk.CTkLabel(
+            self, text=summary, font=("Heebo", 14), text_color= ('black', "white"),
+            wraplength=300, justify="right"
         )
-        self.line_separator.grid(row=1, column=0, sticky="ew", padx=20, pady=5)
+        self.summary_label.pack(pady=5, padx=15, anchor="e")
 
-        self.scrollable_content = ctk.CTkScrollableFrame(
-            self,
-            fg_color="transparent",
-            corner_radius=0
+        self.link_btn = ctk.CTkButton(
+            self, text="...קרא עוד באתר המקור", font=("Heebo", 12, "underline"),
+            fg_color="transparent", text_color="#38bdf8", hover_color=('white',"#334155"),
+            cursor="hand2", height=20, command=self.open_link
         )
-        self.scrollable_content.grid(row=2, column=0, sticky="nsew", padx=5, pady=(5, 10))
+        self.link_btn.pack(pady=5, padx=10, anchor="w")
 
-    def add_widget(self, widget_class, **widget_kwargs):
-        """פונקציית עזר להוספת ווידג'טים ישירות לאזור הגלילה"""
-        new_widget = widget_class(self.scrollable_content, **widget_kwargs)
-        return new_widget
+        print('A')
+        if btn_configs:
+            print('B')
+            self.btn_frame = ctk.CTkFrame(self, fg_color="transparent")
+            self.btn_frame.pack(side="bottom", pady=(0, 12), padx=15, fill="x")
+
+            for btn_conf in btn_configs:
+                btn = ctk.CTkButton(
+                    self.btn_frame,
+                    text=btn_conf.get('text', 'פעולה'),
+                    command=btn_conf.get('command'),
+                    fg_color=btn_conf.get('fg_color', '#3D5A80'),
+                    hover_color=btn_conf.get('hover_color', '#293E59'),
+                    font=('Heebo', 12, 'bold'),
+                    height=32
+                )
+                btn.pack(side="right", expand=True, fill="x", padx=4)
+        else:
+            print('C')
+    def open_link(self):
+        if self.url:
+            webbrowser.open_new_tab(self.url)
+
+
+class RequiredEntry(ctk.CTkEntry):
+    def __init__(self, master, **kwargs):
+        super().__init__(master, **kwargs)
+        self._default_border = self.cget("border_color")
+
+
+        vcmd = (self.register(self._auto_clear_on_type), '%P')
+        self.configure(validate="key", validatecommand=vcmd)
+
+    def _auto_clear_on_type(self, current_text):
+        if current_text.strip():
+            self.configure(border_color=self._default_border)
+        return True
+
+    def check_validity(self):
+        if not self.get().strip():
+            self.configure(border_color="red")
+            return False
+        return True

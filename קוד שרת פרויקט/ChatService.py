@@ -1,202 +1,263 @@
 from Protocol import *
 import time
+import uuid
 import random
-from typing import Optional
 
 
 class ChatManager:
-    def __init__(self, db, ai_handler, send_to_client):
+    def __init__(self, db, send_to_client):
         self.db = db
-        self.ai_handler = ai_handler
         self.rooms = {
-            UserRole.STUDENT: {},
-            UserRole.STANDARD: {}
+            "educational": {},
+            "standard": {}
         }
         self.send_to_client = send_to_client
+
+    def _get_env_by_role(self, role_config):
+        if role_config in [UserRole.TEACHER, UserRole.STUDENT]:
+            return "educational"
+        return "standard"
 
     def process_new_message(self, client, payload):
         room_id = payload.get(Contract.ROOM_ID)
         content = payload.get(Contract.CONTENT)
-        role = client.role
 
-        # מציאת החדר בזיכרון
-        target_room = self.rooms[role].get(room_id)
+        env = self._get_env_by_role(client.role_config)
+        target_room = self.rooms[env].get(room_id)
 
         if not target_room:
             return ResponseFactory.error(msg_type=MsgType.SEND_MSG, code=MsgCodes.NOT_FOUND)
 
         client_nonce = payload.get(Contract.NONCE)
-        msg_id = target_room.handle_new_message(client.p_id, client.sock, content)
+        msg_id = target_room.handle_new_message(client.db_id, client.p_id, client.sock, content)
 
         if msg_id:
-
             return ResponseFactory.create(
                 msg_type=MsgType.SEND_MSG,
                 code=MsgCodes.SUCCESS,
                 raw_data={
                     Contract.MSG_ID: msg_id,
                     Contract.NONCE: client_nonce,
-                    Contract.SERVER_TIME: time.time()
+                    Contract.SERVER_TIME: time.time(),
+                    Contract.ROOM_ID: target_room.room_id
                 }
             )
 
-    def _find_match_room(self, topic, room_id, role, p_id):
+    def _find_match_room(self, topic, room_id, env, p_id):
         if room_id:
-            room = self.rooms[role].get(room_id)
+            room = self.rooms[env].get(room_id)
             if not room:
                 room_data = self.db.get_room_by_id(room_id)
                 if room_data:
-                    room = ChatRoom(self.db, send_func= self.send_to_client, **room_data)
-                    self.rooms[role][room_id] = room
+                    room = ChatRoom(self.db, send_func=self.send_to_client, **room_data)
+                    self.rooms[env][room_id] = room
             return room
 
         if topic:
-            for room in self.rooms[role].values():
+            for room in self.rooms[env].values():
                 if room.topic == topic and room.is_open:
                     if not room.is_user_in_room(p_id):
                         return room
 
-            room_data = self.db.find_available_room_for_user(topic, role, p_id)
+            room_data = self.db.find_available_room_for_user(topic, p_id)
 
             if room_data:
                 r_id = room_data[Contract.ROOM_ID]
-                new_room = ChatRoom(self.db, send_func= self.send_to_client, **room_data)
-                self.rooms[role][r_id] = new_room
+                new_room = ChatRoom(self.db, send_func=self.send_to_client, **room_data)
+                self.rooms[env][r_id] = new_room
                 return new_room
 
         return None
 
-    def sync_user_rooms(self, client):
+    def add_user_to_room(self, client, payload):
         p_id = client.p_id
-        role = client.role
+        role = client.role_config
+        topic = payload.get(Contract.TOPIC)
+        room_id = payload.get(Contract.ROOM_ID)
 
-        # 1. שליפת רשימת מזהי החדרים מה-DB
-        user_rooms_ids = self.db.get_user_room_ids(p_id)
+        if role == UserRole.TEACHER and topic:
+            print(f"[Security Alert] Teacher {client.display_name} tried to join by topic: {topic}!")
+            return ResponseFactory.error(msg_type=MsgType.JOIN_ROOM, code=MsgCodes.ACCESS_DENIED)
+
+        env = self._get_env_by_role(role)
+        target_room = self._find_match_room(topic, room_id, env, p_id)
+
+        if not target_room:
+            return ResponseFactory.create(msg_type=MsgType.JOIN_ROOM, code=MsgCodes.ROOM_NOT_FOUND)
+
+        is_reconnect = target_room.is_user_in_room(p_id)
+
+        if not is_reconnect:
+            if role == UserRole.TEACHER:
+                print(
+                    f"[Security Alert] Teacher {client.display_name} tried to inject into unowned room ID: {room_id}!")
+                return ResponseFactory.error(msg_type=MsgType.JOIN_ROOM, code=MsgCodes.ACCESS_DENIED)
+
+            target_room.participants[p_id] = client.display_name
+            self.db.add_user_to_room_db(target_room.room_id, client.db_id)
+
+        room_update = target_room.get_sync_payload()
+        room_update['is_reconnect'] = is_reconnect
+        room_update[Contract.EVENT] = RoomEvent.USER_RECONNECTED if is_reconnect else RoomEvent.USER_JOINED
+        room_update[Contract.USER] = client.display_name
+
+        target_room.broadcast(broadcast_payload=room_update, sender_p_id=p_id, sender_socket=client.sock)
+
+        return ResponseFactory.create(
+            msg_type=MsgType.JOIN_ROOM,
+            code=MsgCodes.SUCCESS,
+            raw_data=room_update
+        )
+
+    def create_new_room(self, creator_client, payload):
+        role = creator_client.role_config
+
+        if role == UserRole.TEACHER:
+            allowed_role = UserRole.STUDENT
+        elif role == UserRole.STANDARD:
+            allowed_role = UserRole.STANDARD
+        else:
+            return ResponseFactory.error(msg_type=MsgType.CREATE_CHAT_ROOM, code=MsgCodes.INVALID_FIELDS)
+
+        category = payload.get(Contract.CATEGORY)
+        display_name = payload.get(Contract.DISPLAY_NAME)
+        is_open = payload.get(Contract.IS_OPEN)
+
+        room_id = str(uuid.uuid4())
+        invite_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+
+        success = self.db.insert_new_room(
+            room_id=room_id,
+            category=category,
+            display_name=display_name,
+            created_by=creator_client.p_id,
+            invite_code=invite_code,
+            is_open=is_open,
+            allowed_role=allowed_role
+        )
+
+        if not success:
+            return ResponseFactory.error(msg_type=MsgType.CREATE_CHAT_ROOM, code=MsgCodes.SERVER_ERROR)
+
+        room_data = self.db.get_room_by_id(room_id)
+        if not room_data:
+            return ResponseFactory.error(msg_type=MsgType.CREATE_CHAT_ROOM, code=MsgCodes.SERVER_ERROR)
+
+        new_room = ChatRoom(db=self.db, send_func=self.send_to_client, **room_data)
+        new_room.participants[creator_client.p_id] = creator_client.display_name
+
+        self.db.add_user_to_room_db(room_id, creator_client.db_id)
+
+        env = self._get_env_by_role(role)
+        self.rooms[env][room_id] = new_room
+
+        reply_data = new_room.get_sync_payload()
+        reply_data[Contract.ID] = room_id
+
+        return ResponseFactory.create(
+            msg_type=MsgType.CREATE_CHAT_ROOM,
+            code=MsgCodes.SUCCESS,
+            raw_data=reply_data
+        )
+
+    def get_initial_rooms_payload(self, client):
+        db_id = client.db_id
+        p_id = client.p_id
+        env = self._get_env_by_role(client.role_config)
+
+        user_rooms_ids = self.db.get_user_room_ids(db_id)
         all_rooms_sync_data = []
 
         for room_id in user_rooms_ids:
-            # טעינת החדר לזיכרון השרת אם אינו קיים (כפי שכתבת)
-            if room_id not in self.rooms[role]:
+            if room_id not in self.rooms[env]:
                 room_data = self.db.get_room_by_id(room_id)
                 if room_data:
-                    self.rooms[role][room_id] = ChatRoom(self.db, send_func=self.send_to_client, **room_data)
+                    self.rooms[env][room_id] = ChatRoom(
+                        db=self.db,
+                        send_func=self.send_to_client,
+                        **room_data
+                    )
+                    print(self.rooms[env][room_id].get_sync_payload())
 
-            target_room = self.rooms[role][room_id]
+            target_room = self.rooms[env].get(room_id)
             if target_room:
                 if client.sock not in target_room.clients_sockets:
                     target_room.clients_sockets.append(client.sock)
                 target_room.participants[p_id] = client.display_name
 
-                room_info = target_room.get_sync_payload()
-                all_rooms_sync_data.append(room_info)
+                all_rooms_sync_data.append(target_room.get_sync_payload())
 
-        sync_payload = {
-            "rooms": all_rooms_sync_data,
-            "server_topics": self.ai_handler.get_topics_for_role(role)
-        }
-        print(sync_payload)
+        return all_rooms_sync_data
 
-        sync_msg = ResponseFactory.create(
-            msg_type=MsgType.SYNC_DATA,
-            code=MsgCodes.SUCCESS,
-            raw_data=sync_payload
+    def handle_older_topics(self, client, payload):
+        last_id = payload.get(Contract.TOPIC_ID)
+        user_role = client.role
+
+        older_topics = self.db.get_topics_paged(
+            role_name=user_role,
+            before_id=last_id,
+            limit=5
         )
-
-        self.send_to_client(client.sock, sync_msg)
-
-    def add_user_to_room(self, client, payload):
-        p_id = client.p_id
-        role = client.role
-        topic = payload.get(Contract.TOPIC)
-        room_id = payload.get(Contract.ROOM_ID)
-
-        target_room = self._find_match_room(topic, room_id, role, p_id)
-
-        if not target_room:
-            return ResponseFactory.create(msg_type=MsgType.JOIN_ROOM, code=MsgCodes.NOT_FOUND)
-
-        is_reconnect = target_room.is_user_in_room(p_id)
-
-        if not is_reconnect:
-            target_room.participants[p_id] = client.display_name
-
-
-        room_update = {
-            Contract.ROOM_ID: target_room.room_id,
-            Contract.CREATED_AT: target_room.created_at,
-            Contract.TOPIC: target_room.topic,
-            Contract.TOTAL_PARTICIPANTS: len(target_room.participants),
-            Contract.PARTICIPANTS: target_room.participants,
-            'is_open': target_room.is_open,
-            'is_reconnect': is_reconnect,
-            Contract.EVENT: RoomEvent.USER_RECONNECTED if is_reconnect else RoomEvent.USER_JOINED,
-            Contract.USER: client.display_name,
-        }
-
-        target_room.broadcast(raw_content=room_update, sender_p_id=p_id, sender_socket=client.sock)
-
 
         return ResponseFactory.create(
-            msg_type=MsgType.JOIN_ROOM,
+            msg_type=MsgType.GET_OLDER_TOPICS,
             code=MsgCodes.SUCCESS,
-            raw_data= room_update
+            raw_data={'items': older_topics, 'end_of_data': len(older_topics) == 0}
         )
 
+    def handle_older_messages(self, client, payload):
+        room_id = payload.get(Contract.ROOM_ID)
+        anchor_id = payload.get(Contract.ANCHOR_ID)
 
-    def create_new_room(self, creator_client, payload):
-        topic = payload.get(Contract.TOPIC)
-        if not topic:
-            return None
+        env = self._get_env_by_role(client.role_config)
+        target_room = self.rooms[env].get(room_id)
 
-        if self.db.is_topic_exist(topic):
+        if not target_room or not target_room.is_user_in_room(client.p_id):
+            return ResponseFactory.error(msg_type=MsgType.GET_OLDER_MESSAGES, code=MsgCodes.ACCESS_DENIED)
 
-            role = creator_client.role
-            room_id = self._generate_unique_code(role)
-
-
-            self.db.execute_query(
-                "INSERT INTO ChatRooms (Room_ID, Name, Created_By) VALUES (?, ?, ?)",
-                (room_id, topic, creator_client.p_id)
-            )
-            room_data = self.db.get_room_by_id(room_id)
-
-            new_room = ChatRoom(db= self.db, send_func= self.send_to_client, **room_data)
-
-            self.rooms[role][room_id] = new_room
-            return ResponseFactory.create(
-            msg_type=MsgType.CREATE_CHAT_ROOM,
+        db_response = self.db.get_older_messages(room_id=room_id, anchor_id=anchor_id, limit=25)
+        return ResponseFactory.create(
+            msg_type=MsgType.GET_OLDER_MESSAGES,
             code=MsgCodes.SUCCESS,
             raw_data={
                 Contract.ROOM_ID: room_id,
-                Contract.TOPIC: topic,
-                Contract.CREATED_AT: new_room.created_at,
-            })
-
-    def _generate_unique_code(self, role):
-        while True:
-            code = str(random.randint(10000000, 99999999))
-            if code not in self.rooms[role] and not self.db.room_exists(code):
-                return code
+                **db_response
+            }
+        )
 
 
 class ChatRoom:
-    def __init__(self, db, room_id, created_by, created_at, topic, allowed_type, is_locked, send_func, **kwargs):
+    def __init__(self, db, id, created_by, display_name, created_at, category, allowed_role, is_open, invite_code, send_func,
+                 **kwargs):
         self.db = db
-        self.room_id = room_id
-        self.topic = topic
+        self.room_id = id
+        self.invite_code = invite_code
+        self.category = category
         self.creator_p_id = created_by
-        self.allowed_type = allowed_type
-        self.is_open = (is_locked == 0)
+        self.display_name = display_name
+        self.allowed_role = allowed_role
+        self.is_open = (is_open == 0)
         self.participants = {}
         self.clients_sockets = []
         self.created_at = created_at
         self.send_func = send_func
 
+    def get_sync_payload(self):
+        return {
+            Contract.ROOM_ID: self.room_id,
+            Contract.INVITE_CODE: self.invite_code,
+            Contract.CREATED_AT: self.created_at,
+            Contract.CATEGORY: self.category,
+            Contract.TOTAL_PARTICIPANTS: len(self.participants),
+            Contract.PARTICIPANTS: self.participants,
+            Contract.DISPLAY_NAME: self.display_name,
+            Contract.IS_OPEN: self.is_open
+        }
+
     def is_user_in_room(self, p_id):
         return p_id in self.participants
 
     def broadcast(self, broadcast_payload, sender_p_id, sender_socket=None):
-
         message = ResponseFactory.create(
             msg_type=MsgType.RECEIVE_MSG,
             code=MsgCodes.SUCCESS,
@@ -213,19 +274,21 @@ class ChatRoom:
             if sock in self.clients_sockets:
                 self.clients_sockets.remove(sock)
 
-    def handle_new_message(self, sender_p_id, sender_sock, content):
+    def handle_new_message(self, sender_db_id, sender_p_id, sender_sock, content):
         now = time.time()
-        msg_id = self.db.insert_msg(self.room_id, sender_p_id, content, now)
+        public_msg_id = str(uuid.uuid4())
 
-        if msg_id:
+        success = self.db.insert_msg(self.room_id, sender_db_id, content, now, public_msg_id)
+
+        if success:
             broadcast_data = {
                 Contract.ROOM_ID: self.room_id,
                 Contract.CONTENT: content,
                 Contract.SENDER_PID: sender_p_id,
-                Contract.MSG_ID: msg_id,
+                Contract.MSG_ID: public_msg_id,
                 Contract.TIMESTAMP: now
             }
 
-            self.broadcast(broadcast_data, sender_p_id, sender_sock)
-            return msg_id
+            self.broadcast(broadcast_payload=broadcast_data, sender_p_id=sender_p_id, sender_socket=sender_sock)
+            return public_msg_id
         return None

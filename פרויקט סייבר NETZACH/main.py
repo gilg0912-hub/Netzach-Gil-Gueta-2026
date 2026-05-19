@@ -1,19 +1,14 @@
 import queue
-
+import customtkinter
 from network_infra import Message_Manager
-
 from network import Server_Communicator
-
-
 from user_state import User_State
 from gui_state_mgmt import GUI_State
 from dispatcher import MsgDispatcher
-
 from services import AuthService, ChatService
-
 from main_gui import Chat_GUI
 from app_constants import Contract
-
+customtkinter.deactivate_automatic_dpi_awareness()
 class App_Context:
     def __init__(self):
         self.user_state = User_State()
@@ -50,5 +45,6 @@ class App_Context:
 
 
 # MAIN WINDOW
+
 app = App_Context()
 app.run()

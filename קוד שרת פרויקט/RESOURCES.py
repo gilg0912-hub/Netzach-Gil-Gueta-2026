@@ -85,4 +85,6 @@ STANDARD_SOURCES = {
         "https://www.israelhayom.co.il/news/politics",
         "https://www.maariv.co.il/news/politics"
     ]
+
 }
+TEACHER_SOURCES = {}

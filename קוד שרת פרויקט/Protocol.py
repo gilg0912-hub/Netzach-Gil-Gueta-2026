@@ -5,9 +5,7 @@ import string
 import re
 from typing import NamedTuple, Optional
 
-# ==========================================
-# 1. פרוטוקול התקשורת (Contract)
-# ==========================================
+
 class Contract(StrEnum):
     TYPE = 'type'
     TIMESTAMP = 'timestamp'
@@ -19,6 +17,7 @@ class Contract(StrEnum):
 
 
     IDENTITY = 'identity'
+    ID =    'id'
     USERNAME = 'username'
     PASSWORD = 'password'
     EMAIL = 'email'
@@ -33,7 +32,12 @@ class Contract(StrEnum):
 
 
     TOPIC = 'topic'
+    TOPIC_ID = 'topic_id'
+    CATEGORY = 'category'
+    SUMMARY='summary'
     ROOM_ID = 'room_id'
+    ROOMS = 'rooms'
+    TOPICS = 'topics'
     CONTENT = 'content'
 
 
@@ -47,6 +51,7 @@ class Contract(StrEnum):
 
     NONCE = 'nonce'
     MSG_ID = 'msg_id'
+    ANCHOR_ID = 'anchor_id'
 
 
     PARTICIPANTS = "participants"
@@ -59,8 +64,10 @@ class Contract(StrEnum):
     EXPIRY = "expiry"
 
     IS_LOCKED = 'is_locked'
+    IS_OPEN = 'is_open'
     CREATED_AT = 'created_at'
-
+    NAME = 'name'
+    INVITE_CODE = 'invite_code'
 
 class RoomEvent(IntEnum):
     USER_JOINED = 1
@@ -89,19 +96,22 @@ class MsgType(StrEnum):
     ROOM_DETAILS = "room_details"
     RECEIVE_MSG= 'receive_message'
 
+    GET_OLDER_MESSAGES = 'get_older_messages'
+    GET_OLDER_TOPICS = 'get_older_topics'
+
 
 class MsgCodes(IntEnum):
-    # הצלחה (2xx)
     SUCCESS = 200
-    LOGIN_SUCCESS = 201
-    SIGNUP_SUCCESS = 202
     OTP_SENT = 203
     OTP_RESENT = 204
 
 
     INVALID_FIELDS = 400
     AUTH_FAILED = 401
+
     NOT_FOUND = 404
+    ROOM_NOT_FOUND = 460
+
     SESSION_EXPIRED = 401
     USER_ALREADY_EXISTS = 409
     BLOCKED_EMAIL = 410
@@ -114,25 +124,26 @@ class MsgCodes(IntEnum):
     SERVER_ERROR = 500
 
 
-# ==========================================
-# 3. ניהול תפקידים (User Roles)
-# ==========================================
 class UserRole(StrEnum):
-    STANDARD = ("standard", "Standards", "username", "username")
-    TEACHER = ("teacher", "Teachers", "national_id", "full_name")
-    STUDENT = ("student", "Students", "national_id", "full_name")
 
-    def __new__(cls, value, table, id_field, display_name):
+    STANDARD = ("standard", Contract.USERNAME, None, "identity")
+    TEACHER = ("teacher", Contract.ID, "teachers", "full_name")
+    STUDENT = ("student", Contract.ID, "students", "full_name")
+
+    def __new__(cls, value, id_field, child_table, display_field):
         obj = str.__new__(cls, value)
         obj._value_ = value
-        obj.table = table
+
         obj.id_field = id_field
-        obj.display_name = display_name
+        obj.child_table = child_table
+        obj.display_field = display_field
+
         return obj
 
     @staticmethod
     def get_role_config(role_name):
-        if not role_name: return None
+        if not role_name:
+            return None
         role_name_lower = str(role_name).lower()
         for role in UserRole:
             if role == role_name_lower:
@@ -140,53 +151,50 @@ class UserRole(StrEnum):
         return None
 
 class MonitorKey(Enum):
-    """מפתחות לניהול הנתונים בתוך ה-Traffic Monitor"""
-    COUNT = auto()            # מספר הודעות כללי
-    START_TIME = auto()       # תחילת חלון זמן (קצב)
-    LAST_BLIND_HASH = auto()        # Hash של התוכן האחרון
-    LAST_LOGICAL_HASH = auto()        # Hash של התוכן האחרון
-    DUPE_COUNT = auto()       # מונה הודעות זהות ברצף
-    LAST_MSG_TIME = auto()    # זמן שליחת ההודעה האחרונה (לסליחה על כפילות)
+
+    COUNT = auto()
+    START_TIME = auto()
+    LAST_BLIND_HASH = auto()
+    LAST_LOGICAL_HASH = auto()
+    DUPE_COUNT = auto()
+    LAST_MSG_TIME = auto()
     LAST_DUPE_TS= auto()
-# ==========================================
-# 4. מבני הודעות (Payload Validation)
-# ==========================================
+
 class MsgStructures:
-    # הגדרת שדות חובה לכל סוג בקשה שמגיעה מהלקוח
 
-
-    # הגדרת שדות שיחזרו בתגובה ללקוח (whitelist)
-    _RESPONSES = {
-        MsgCodes.LOGIN_SUCCESS: [Contract.PUBLIC_ID, Contract.USERNAME, Contract.TOKEN, Contract.ROLE, Contract.DISPLAY_NAME, Contract.EMAIL],
-        MsgCodes.SIGNUP_SUCCESS: [Contract.PUBLIC_ID, Contract.EMAIL, Contract.DISPLAY_NAME, Contract.EMAIL],
-        MsgCodes.OTP_SENT: [Contract.EMAIL],
-        MsgCodes.OTP_RESENT: [Contract.EMAIL, Contract.ATTEMPTS],
+    SENSITIVE_FIELDS = {
+        Contract.PASSWORD,
+        "hashed_password",
+        "salt",
+        "internal_id"
     }
 
     _REQUESTS = {
-        MsgType.LOGIN: [{Contract.IDENTITY, Contract.PASSWORD, Contract.ROLE}],
-        MsgType.SIGNUP: [{Contract.IDENTITY, Contract.PASSWORD, Contract.ROLE, Contract.EMAIL}],
+        MsgType.LOGIN: [{Contract.IDENTITY, Contract.PASSWORD}],
+        MsgType.SIGNUP: [{Contract.IDENTITY, Contract.PASSWORD, Contract.ROLE, Contract.EMAIL}, {Contract.IDENTITY, Contract.PASSWORD, Contract.ROLE, Contract.EMAIL}],
         MsgType.VERIFY_OTP: [{Contract.OTP_CODE}],
-        MsgType.RECONNECT: [{Contract.TOKEN, Contract.ROLE}],
+        MsgType.RECONNECT: [{Contract.TOKEN}],
         MsgType.JOIN_ROOM: [
             {Contract.ROOM_ID},
-            {Contract.TOPIC}
-        ]
+            {Contract.CATEGORY}
+        ],
+        MsgType.CREATE_CHAT_ROOM: [{Contract.DISPLAY_NAME, Contract.CATEGORY, Contract.SUMMARY, Contract.IS_OPEN, Contract.TYPE}],
+        MsgType.GET_OLDER_TOPICS: [{Contract.TOPIC_ID}],
+        MsgType.SEND_MSG: [{Contract.ROOM_ID, Contract.CONTENT, Contract.NONCE}],
+        MsgType.GET_OLDER_MESSAGES: [{Contract.ROOM_ID, Contract.ANCHOR_ID}],
     }
 
     @staticmethod
     def get_allowed_structures(msg_type: MsgType):
-        return MsgStructures._REQUESTS.get(msg_type, [])
+        return MsgStructures._REQUESTS.get(msg_type, [set()])
 
     @staticmethod
-    def get_response_fields(code: MsgCodes):
-        # מחזיר שדות לפי הקוד (כי המבנה תלוי בתוצאה, לא רק בסוג ההודעה)
-        return MsgStructures._RESPONSES.get(code, [])
+    def clean_sensitive_fields(raw_data):
+        return {
+            k: v for k, v in raw_data.items()
+            if k not in MsgStructures.SENSITIVE_FIELDS
+        }
 
-
-# ==========================================
-# 5. מנוע התגובות (Response Factory)
-# ==========================================
 class ResponseFactory:
     @staticmethod
     def create(msg_type: MsgType, code: MsgCodes, raw_data: dict = {}):
@@ -194,13 +202,7 @@ class ResponseFactory:
 
         status = Contract.SUCCESS if 200 <= code < 300 else Contract.FAILED
 
-        allowed_fields = MsgStructures.get_response_fields(code)
-
-        if status == Contract.SUCCESS:
-            payload = {f: raw_data[f] for f in allowed_fields if f in raw_data}
-        else:
-            payload = raw_data
-
+        payload = MsgStructures.clean_sensitive_fields(raw_data)
 
         return {
             Contract.TYPE: msg_type,
@@ -213,16 +215,12 @@ class ResponseFactory:
     def error(msg_type: MsgType=MsgType.ERROR, code: MsgCodes=MsgCodes.SERVER_ERROR, raw_data: dict = None):
         return ResponseFactory.create(msg_type, code, raw_data)
 
-
-# ==========================================
-# 6. שירותים נוספים (Validator & OTP)
-# ==========================================
 class Validator:
     _PATTERNS = {
         Contract.EMAIL: r"(?i)^(?!.*\.{2})[a-z0-9!#$%&'*+/=?^_`{|}~.-]{2,64}@gmail\.com$",
         Contract.PASSWORD: r"^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,20}$",
-        Contract.USERNAME: r"^[a-zA-Z0-9]{3,15}$",  # 3-15 תווים אלפא-נומריים
-        Contract.NATIONAL_ID: r"^\d{9}$",  # 9 ספרות בדיוק
+        Contract.USERNAME: r"^(?=.*[a-zA-Z])[a-zA-Z0-9]{3,15}$",
+        Contract.ID: r"^\d{9}$",
         Contract.OTP_CODE: r"^\d{6}$"
     }
 
@@ -232,6 +230,7 @@ class Validator:
 
         payload_keys = set(payload.keys())
         optional_structures = MsgStructures.get_allowed_structures(msg_type)
+        print(any(payload_keys == required_set for required_set in optional_structures), 'a')
         return any(payload_keys == required_set for required_set in optional_structures)
 
     @staticmethod

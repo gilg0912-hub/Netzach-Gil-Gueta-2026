@@ -1,94 +1,170 @@
 import customtkinter
+import webbrowser
 
-# --- 1. הגדרת מאגר העיצובים ---
-THEMES = {
-    "Ocean Blue": {
-        "fg_color": "#1F6AA5",
-        "hover_color": "#144870",
-        "text_color": "white"
-    },
-    "Forest Green": {
-        "fg_color": "#2D5A27",
-        "hover_color": "#1E3D1A",
-        "text_color": "#E0E0E0"
-    },
-    "Cyberpunk": {
-        "fg_color": "#FF00FF",
-        "hover_color": "#BC00BC",
-        "text_color": "black"
-    },
-    "Dark Mode": {
-        "fg_color": "#3D3D3D",
-        "hover_color": "#2B2B2B",
-        "text_color": "white"
-    }
-}
-
-# רשימה גלובלית שתחזיק את כל הווידג'טים שצריכים להתעדכן
-all_dynamic_widgets = []
+# הגדרות עיצוב כלליות לאפליקציה (Dark Mode מודרני)
+customtkinter.set_appearance_mode("Dark")
+customtkinter.set_default_color_theme("blue")
 
 
-# --- 2. יצירת רכיבים "חכמים" ---
-class MyButton(customtkinter.CTkButton):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        all_dynamic_widgets.append(self)
+class TopicCard(customtkinter.CTkFrame):
 
-    def destroy(self):
-        if self in all_dynamic_widgets:
-            all_dynamic_widgets.remove(self)
-        super().destroy()
+    def __init__(self, master, title, summary, url, topic_id, join_callback, **kwargs):
+        super().__init__(master, corner_radius=15, fg_color="#1e293b", border_width=1, border_color="#334155", **kwargs)
+
+        self.url = url
+        self.topic_id = topic_id
+
+        self.title_label = customtkinter.CTkLabel(
+            self, text=title, font=("Heebo", 18, "bold"),
+            text_color="#f8fafc", wraplength=300, justify="right"
+        )
+        self.title_label.pack(pady=(15, 5), padx=15, anchor="e")
+
+        self.summary_label = customtkinter.CTkLabel(
+            self, text=summary, font=("Heebo", 14),
+            text_color="#cbd5e1", wraplength=300, justify="right"
+        )
+        self.summary_label.pack(pady=5, padx=15, anchor="e")
+
+        self.link_btn = customtkinter.CTkButton(
+            self, text="קרא עוד באתר המקור...", font=("Heebo", 12, "underline"),
+            fg_color="transparent", text_color="#38bdf8", hover_color="#334155",
+            cursor="hand2", height=20, command=self.open_link
+        )
+        self.link_btn.pack(pady=5, padx=10, anchor="w")
+
+        self.join_btn = customtkinter.CTkButton(
+            self, text="הצטרף לשיח", font=("Heebo", 14, "bold"),
+            fg_color="#f59e0b", hover_color="#d97706", text_color="white",
+            corner_radius=8, command=lambda: join_callback(self.topic_id)
+        )
+        self.join_btn.pack(pady=(10, 15), padx=15, fill="x")
+
+    def open_link(self):
+        if self.url:
+            webbrowser.open_new_tab(self.url)
 
 
-# --- 3. פונקציית העדכון הגלובלית ---
-def change_system_theme(theme_name):
-    if theme_name in THEMES:
-        style = THEMES[theme_name]
-        for widget in all_dynamic_widgets:
-            try:
-                widget.configure(
-                    fg_color=style["fg_color"],
-                    hover_color=style["hover_color"],
-                    text_color=style["text_color"]
-                )
-            except Exception:
-                pass
-
-
-# --- 4. בניית הממשק ---
 class App(customtkinter.CTk):
+    """
+    מחלקת האפליקציה הראשית
+    """
+
     def __init__(self):
         super().__init__()
-        self.title("Global Theme Switcher")
-        self.geometry("400x300")
 
-        self.grid_columnconfigure(0, weight=1)
+        self.title("נצ\"ח - נושאים חמים")
+        self.geometry("450x650")
 
-        # כותרת
-        self.label = customtkinter.CTkLabel(self, text="בחר עיצוב למערכת:", font=("Arial", 16, "bold"))
-        self.label.pack(pady=20)
-
-        # תפריט בחירה (OptionMenu)
-        self.theme_menu = customtkinter.CTkOptionMenu(
-            self,
-            values=list(THEMES.keys()),
-            command=change_system_theme  # הפונקציה שנקראת בכל שינוי
+        # כותרת ראשית במסך
+        self.header = customtkinter.CTkLabel(
+            self, text="אקטואליה בזמן אמת", font=("Heebo", 24, "bold"), text_color="#f59e0b"
         )
-        self.theme_menu.pack(pady=10)
+        self.header.pack(pady=(20, 10))
 
-        # יצירת כמה כפתורים לדוגמה (שים לב שמשתמשים ב-MyButton)
-        self.btn1 = MyButton(self, text="כפתור אישור")
-        self.btn1.pack(pady=10)
+        # יצירת פאנל גלילה עבור הכרטיסיות
+        self.scrollable_frame = customtkinter.CTkScrollableFrame(
+            self, fg_color="transparent", scrollbar_button_color="#475569"
+        )
+        self.scrollable_frame.pack(padx=20, pady=10, fill="both", expand=True)
 
-        self.btn2 = MyButton(self, text="ביטול")
-        self.btn2.pack(pady=10)
+        # רשימת נתונים לדוגמה (סימולציה של JSON שמגיע מהשרת דרך Gemini)
+        mock_topics = [
+            {
+                "id": 101,
+                "title": "חוק הגיוס: מתווה חדש על השולחן",
+                "summary": "דיון סביב ההצעה החדשה לשילוב חרדים בצה\"ל ובשירות הלאומי. מהן ההשלכות על החברה הישראלית?",
+                "url": "https://www.ynet.co.il"
+            },
+            {
+                "id": 101,
+                "title": "חוק הגיוס: מתווה חדש על השולחן",
+                "summary": "דיון סביב ההצעה החדשה לשילוב חרדים בצה\"ל ובשירות הלאומי. מהן ההשלכות על החברה הישראלית?",
+                "url": "https://www.ynet.co.il"
+            },
+            {
+                "id": 101,
+                "title": "חוק הגיוס: מתווה חדש על השולחן",
+                "summary": "דיון סביב ההצעה החדשה לשילוב חרדים בצה\"ל ובשירות הלאומי. מהן ההשלכות על החברה הישראלית?",
+                "url": "https://www.ynet.co.il"
+            },
+            {
+                "id": 101,
+                "title": "חוק הגיוס: מתווה חדש על השולחן",
+                "summary": "דיון סביב ההצעה החדשה לשילוב חרדים בצה\"ל ובשירות הלאומי. מהן ההשלכות על החברה הישראלית?",
+                "url": "https://www.ynet.co.il"
+            },
+            {
+                "id": 101,
+                "title": "חוק הגיוס: מתווה חדש על השולחן",
+                "summary": "דיון סביב ההצעה החדשה לשילוב חרדים בצה\"ל ובשירות הלאומי. מהן ההשלכות על החברה הישראלית?",
+                "url": "https://www.ynet.co.il"
+            },
+            {
+                "id": 101,
+                "title": "חוק הגיוס: מתווה חדש על השולחן",
+                "summary": "דיון סביב ההצעה החדשה לשילוב חרדים בצה\"ל ובשירות הלאומי. מהן ההשלכות על החברה הישראלית?",
+                "url": "https://www.ynet.co.il"
+            },
+            {
+                "id": 101,
+                "title": "חוק הגיוס: מתווה חדש על השולחן",
+                "summary": "דיון סביב ההצעה החדשה לשילוב חרדים בצה\"ל ובשירות הלאומי. מהן ההשלכות על החברה הישראלית?",
+                "url": "https://www.ynet.co.il"
+            },
+            {
+                "id": 101,
+                "title": "חוק הגיוס: מתווה חדש על השולחן",
+                "summary": "דיון סביב ההצעה החדשה לשילוב חרדים בצה\"ל ובשירות הלאומי. מהן ההשלכות על החברה הישראלית?",
+                "url": "https://www.ynet.co.il"
+            },
+            {
+                "id": 101,
+                "title": "חוק הגיוס: מתווה חדש על השולחן",
+                "summary": "דיון סביב ההצעה החדשה לשילוב חרדים בצה\"ל ובשירות הלאומי. מהן ההשלכות על החברה הישראלית?",
+                "url": "https://www.ynet.co.il"
+            },
+            {
+                "id": 101,
+                "title": "חוק הגיוס: מתווה חדש על השולחן",
+                "summary": "דיון סביב ההצעה החדשה לשילוב חרדים בצה\"ל ובשירות הלאומי. מהן ההשלכות על החברה הישראלית?",
+                "url": "https://www.ynet.co.il"
+            },
+            {
+                "id": 102,
+                "title": "היערכות העורף להסלמה בצפון",
+                "summary": "הנחיות פיקוד העורף המעודכנות ודיון על החוסן האזרחי ביישובי קו העימות אל מול האיום הגובר.",
+                "url": "https://www.mako.co.il"
+            },
+            {
+                "id": 103,
+                "title": "שילוב בינה מלאכותית במערכת החינוך",
+                "summary": "האם טכנולוגיות AI יעצימו את התלמידים או יפגעו ביכולות הלמידה העצמאיות? דיון פדגוגי.",
+                "url": "https://www.haaretz.co.il"
+            }
+        ]
 
-        self.btn3 = MyButton(self, text="הגדרות נוספות")
-        self.btn3.pack(pady=10)
+        # ייצור הכרטיסיות בלולאה והכנסתן לפאנל הגלילה
+        for topic in mock_topics:
+            card = TopicCard(
+                master=self.scrollable_frame,
+                title=topic["title"],
+                summary=topic["summary"],
+                url=topic["url"],
+                topic_id=topic["id"],
+                join_callback=self.handle_join_chat
+            )
+            # pack מוסיף את הכרטיסייה לפריים. fill="x" גורם לה להתרחב לרוחב המסך
+            card.pack(pady=10, fill="x", padx=5)
 
-        # הגדרת עיצוב ראשוני
-        self.theme_menu.set("Ocean Blue")
-        change_system_theme("Ocean Blue")
+    def handle_join_chat(self, topic_id):
+        """
+        פונקציית CallBack שתופעל כשמשתמש לוחץ 'הצטרף לשיח'
+        כאן תכניס את הלוגיקה של שליחת JSON לשרת דרך ה-Socket
+        """
+        print(f"[Client] Sending JSON to Server: Requesting to join room ID {topic_id}")
+        # דוגמה לחיווי למשתמש:
+        # self.status_label.configure(text=f"מתחבר לחדר {topic_id}...")
 
 
 if __name__ == "__main__":

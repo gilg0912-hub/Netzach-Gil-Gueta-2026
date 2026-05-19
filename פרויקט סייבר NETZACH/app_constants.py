@@ -1,4 +1,4 @@
-from enum import StrEnum, Enum, IntEnum, auto
+from enum import StrEnum, IntEnum, auto
 import time
 import re
 
@@ -6,47 +6,51 @@ class AppScreens(StrEnum):
     AUTH = 'auth'
     CHAT = 'chat'
 
-
 class StateKey(StrEnum):
     CONNECTED = "connected"
-    IDENTIFIED = "identified"
     LOADING_STATUS = "loading_status"
     DISPLAY_NAME = "display_name"
     CODE = "code"
     PUBLIC_ID = "public_id"
     LAST_MSG_TYPE = "last_msg_type"
     LAST_PAYLOAD = "last_payload"
-    TOKEN = "token"
+    TOKEN = "session_token"
     AUTHENTICATED = "authenticated"
-    GMAIL = "gmail"
+    EMAIL = "email"
     ERROR_MSG = "error_msg"
     ROLE = "role"
     LOGGED_IN = "logged_in"
     IDENTITY = "identity"
     IS_ACTIVE = "is_active"
-    USERNAME = "username"
     FREEZE_SCREEN = "freeze_screen"
     SHOW_USER_INFO = "show_user_info"
     CURRENT_ROOM_ID = "current_room_id"
+    SYNC_ROOMS = 'sync_rooms'
+    SYNC_TOPICS = 'sync_topics'
+    SYNC_MESSAGES = 'sync_messages'
+    TOPICS_UI_SIGNAL = 'topics_ui_signal'
+    ROOMS_UI_SIGNAL = 'rooms_ui_signal'
+    MESSAGES_UI_SIGNAL = 'messages_ui_signal'
+    SUGGESTED_TOPIC = 'suggested_topic'
+    SUGGESTED_TOPIC_ID = 'suggested_topic_id'
+    RELEASE_BTNS = 'release_btn'
 
-    class RequestFactory:
-        """יצירת בקשות מהלקוח לשרת"""
+class RequestFactory:
+    """יצירת בקשות מהלקוח לשרת"""
 
-        @staticmethod
-        def create(msg_type, data: dict = None):
-            now = int(time.time())
-            if not msg_type:
-                return
+    @staticmethod
+    def create(msg_type, data: dict = None):
+        now = int(time.time())
+        if not msg_type:
+            return
 
-            return {
-                Contract.TYPE: msg_type,
-                Contract.TIMESTAMP: now,
-                Contract.DATA: data or {}
-            }
-
+        return {
+            Contract.TYPE: msg_type,
+            Contract.TIMESTAMP: now,
+            Contract.DATA: data or {}
+        }
 
 class MsgType(StrEnum):
-    """סוגי הפעולות שהשרת יודע לזהות"""
     LOGIN = "login"
     SIGNUP = "signup"
     VERIFY_OTP = "verify_otp"
@@ -56,6 +60,7 @@ class MsgType(StrEnum):
     GENERAL = "general"
     SYSTEM='system'
 
+    SYNC_DATA = 'sync_data'
     CREATE_CHAT_ROOM = 'create_chat_room'
     SEND_MSG = "send_message"
     JOIN_ROOM = "join_room"
@@ -63,14 +68,13 @@ class MsgType(StrEnum):
     RECEIVE_MSG = 'receive_message'
 
     GET_OLDER_MESSAGES = 'get_older_messages'
-
+    GET_OLDER_TOPICS = 'get_older_topics'
 
 class ResponseUtils:
     @staticmethod
     def is_success(code):
         # 200-299 נחשב להצלחה בפרוטוקול שלנו
         return 200 <= code < 300
-
 
 class UIColors:
     # צבעי מיתוג של Netzach
@@ -97,15 +101,15 @@ class MsgCodes(IntEnum):
     LOGIN_SUCCESS = 201
     SIGNUP_SUCCESS = 202
     OTP_SENT = 203
-    EMAIL_VERIFIED = 204
+    OTP_RESENT = 204
     PASSWORD_RESET_SUCCESS = 205
-    OTP_RESENT = 206
     PENDING = 207
 
     INVALID_FIELDS = 400
     UNAUTHORIZED = 401
     ACCESS_DENIED = 403
     NOT_FOUND = 404
+    ROOM_NOT_FOUND = 460
     SESSION_EXPIRED = 419
     CONFLICT = 409
     BLOCKED_EMAIL = 410
@@ -131,7 +135,7 @@ class Contract(StrEnum):
 
     IDENTITY = 'identity'
     USERNAME = 'username'
-    ID = 'ID'
+    ID = 'id'
     PASSWORD = 'password'
     EMAIL = 'email'
     ROLE = 'role'
@@ -144,9 +148,14 @@ class Contract(StrEnum):
     OTP_CODE = "otp_code"
     ATTEMPTS = 'attempts'
 
-    TOPIC = 'topic'
+    CATEGORY = 'category'
+    TOPIC ='topic'
+    TOPIC_ID = 'topic_id'
     ROOM_ID = 'room_id'
+    ROOM_CODE ='room_code'
     CONTENT = 'content'
+    ROOMS = 'rooms'
+    TOPICS = 'topics'
 
     NATIONAL_ID = 'national_id'
     FULL_NAME = 'full_name'
@@ -154,6 +163,8 @@ class Contract(StrEnum):
     SENDER_PID = 'sender_p_id'
     ORG_TIME = 'origin_time'
     SERVER_TIME = 'server_time'
+    NAME = 'name'
+    SUMMARY = 'summary'
 
     NONCE = 'nonce'
     MSG_ID = 'msg_id'
@@ -166,17 +177,24 @@ class Contract(StrEnum):
     PURPOSE = 'purpose'
     EXPIRY = "expiry"
 
-    IS_LOCKED = 'is_locked'
+    IS_OPEN = 'is_open'
     CREATED_AT = 'created_at'
+    CREATED_BY = 'created_by'
+    INVITE_CODE = 'invite_code'
 
 
 class Validator:
     EMAIL_PATTERN = r"(?i)^(?!.*\.{2})[a-z0-9!#$%&'*+/=?^_`{|}~.-]{2,64}@gmail\.com$"
     PASS_PATTERN = r"^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,20}$"
     ID_PATTERN = r"^\d{9}$"
-    USERNAME_PATTERN = r"^\S{3,15}$"
+    USERNAME_PATTERN = r"^(?=.*[a-zA-Z])[a-zA-Z0-9]{3,15}$"
     OTP_CODE = r"\d{6}"
 
     @staticmethod
     def is_valid_email(email):
         return bool(re.match(Validator.EMAIL_PATTERN, email))
+
+class UserRole(StrEnum):
+    STANDARD = "standard"
+    STUDENT = "student"
+    TEACHER = "teacher"

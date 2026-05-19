@@ -1,374 +1,277 @@
-
 import customtkinter as ctk
-from app_constants import MsgCodes
+from app_constants import StateKey, Contract
+from CHAT_config import *
 from navigation import NavSidebar, Menu
-from chat_widgets import ChatRoom, ActionsScreen
-from ui_components import ScrollableSectionFrame
-from app_constants import StateKey, Contract, MsgType
+from chat_widgets import ChatScreen, HotScreen, CreateScreen
 from gui_state_mgmt import ResponseTranslator
-from PIL import Image
-from modals import load_ui_image, resize_image
+from modals import UserDetailsOverlay
 
-"""
+
 class ChatController(ctk.CTkFrame):
     def __init__(self, parent, gui_state, services):
-        super().__init__(parent, fg_color='#0A1929')
+
+        self.theme = {
+            # Light: אפור-פסטל קריר ומרגיע (לא מסנוור). Dark: שחור-כחול עמוק.
+            "main_bg": ("#F1F5F9", "#0D1117"),
+
+            # Light: סיידבר וכותרת עליונה בלבן נקי כדי ליצור הפרדה.
+            "sidebar_slate": ("#FFFFFF", "#161B22"),
+            "header_bg": ("#F4E9D8", "#544E2C"),
+
+            # Light: כרטיסיות בלבן טהור.
+            "card_bg": ("#FFFFFF", "#21262D"),
+
+            # Light: זהב כהה וברור שקריא על רקע בהיר. Dark: זהב מבריק.
+            "gold": ("#8C6800", "#D4AF37"),
+
+            # Light: טקסט באפור-ציפחה כמעט שחור לקריאות מושלמת.
+            "text": ("#0F172A", "#C9D1D9"),
+
+            # Light: מסגרות באפור עדין.
+            "border": ("#E2E8F0", "#30363D")
+        }
+
+        super().__init__(parent, fg_color= self.theme['main_bg'], corner_radius=0)
         self.gui_state = gui_state
-        self.chat_service = services['chat']
-        self.rooms = {}
-        self.current_room_id = None
+        self.chat_service= services['chat']
+        self._is_in_penalty = False
 
-
-
-        ctk.CTkFrame(self, fg_color="#1E4976", height=2).pack(fill="x")
-
-        self.menu = Menu(self, self.gui_state)
-
-        self.menu.add_btn("צ'אט👪", lambda: self.show_screen('chat'))
-        self.menu.add_btn('הצטרפות👋', lambda: self.show_screen('actions'))
-        self.menu.add_btn('צור קבוצה➕')
-        self.menu.add_bottom_btn('פרופיל⚙')
-
-        self.menu.pack(side='left', fill='y')
-
-        ctk.CTkFrame(self, fg_color="#1E4976", width=2).pack(fill="y", padx=10, side="left")
-
-        self.navigation_sidebar = NavSidebar(self, self.chat_service, self.gui_state, self.show_screen)
-        self.navigation_sidebar.pack(side="left", fill="y", padx=(10, 5), pady=10)
-
-        ctk.CTkFrame(self, fg_color="#1E4976", width=2).pack(fill="y", padx=10, side="left")
-
-        self.main_container = ctk.CTkFrame(self, fg_color="transparent", corner_radius=20)
-        self.main_container.pack(side="right", expand=True, fill="both", padx=(5, 10), pady=10)
-
-        self.chat_header = ctk.CTkFrame(self.main_container, fg_color="transparent", height=60)
-        self.chat_header.pack(fill="x", padx=20, pady=10)
-
-        self.room_name_label = ctk.CTkLabel(self.chat_header, text="בחר שיחה מהתפריט",
-                                            font=("Heebo", 20, "bold"), text_color="#B0903D")
-        self.room_name_label.pack(side="right")
-
-        self.chat_container = ctk.CTkFrame(self.main_container, fg_color="transparent", corner_radius=20)
-
-        self.actions_container= ActionsScreen(self.main_container, self.gui_state, self.chat_service)
-        self.current_screen = None
-        self.screens = {
-            'chat': self.chat_container,
-            'actions': self.actions_container
-        }
-
-
-        self.message_view = ScrollableSectionFrame(self.chat_container, self.gui_state, self.chat_service,'קבוצה')
-        self.message_view.pack(expand=True, fill="both", padx=15, pady=5)
-
-        self.input_frame = ctk.CTkFrame(self.chat_container, fg_color="transparent", height=80)
-        self.input_frame.pack(fill="x", padx=15, pady=(5, 15))
-
-        self.msg_entry = ctk.CTkEntry(self.input_frame, placeholder_text="הקלד הודעה...", font=("Heebo", 14),
-                                      height=45, fg_color="#1A242F", border_width=0, justify="right")
-        self.msg_entry.pack(side="right", expand=True, fill="x", padx=(10, 0))
-        self.msg_entry.bind("<Return>", lambda e: self.send_message())
-
-        self.send_btn = ctk.CTkButton(self.input_frame, text="➤", width=60, height=45, font=("Arial", 30),
-                                      fg_color="#B0903D", hover_color="#8C7230", text_color="#0A2140",
-                                      command=self.send_message)
-
-        self.send_btn.pack(side="left")
-
-        self._handlers = {
-            MsgType.JOIN_ROOM: self._handle_room_joined,
-            MsgType.CREATE_CHAT_ROOM: self._handle_room_joined,
-            MsgType.GET_OLDER_MESSAGES: self._handle_history,
-            MsgType.RECEIVE_MSG: self._handle_new_chat_msg
-        }
-
-        for m_type in self._handlers.keys():
-            self.chat_service.dispatcher.register(m_type, self._main_dispatch_gate)
-
-        self._register_handlers()
-        self.show_screen('chat')
-
-    def show_screen(self, screen_name):
-        if screen_name == self.current_screen or screen_name not in self.screens:
-            return
-
-        if self.current_screen:
-            self.screens[self.current_screen].pack_forget()
-        self.screens[screen_name].pack(fill="both", expand=True, padx=20, pady=10)
-        self.current_screen = screen_name
-    def _register_handlers(self):
-        self._handlers = {
-            MsgType.JOIN_ROOM: self._handle_room_joined,
-            MsgType.CREATE_CHAT_ROOM: self._handle_room_joined,
-            MsgType.RECEIVE_MSG: self._handle_new_chat_msg
-        }
-        for m_type in self._handlers.keys():
-            self.chat_service.dispatcher.register(m_type, self._main_dispatch_gate)
-
-    def send_message(self):
-        text = self.msg_entry.get().strip()
-        if text and self.current_room_id:
-            payload = {Contract.ROOM_ID: self.current_room_id, 'content': text}
-            self.chat_service.dispatcher.send_msg(MsgType.SEND_MSG, payload)
-            self.msg_entry.delete(0, 'end')
-
-    def _main_dispatch_gate(self, data, code):
-        msg_type = self.gui_state.get_state(StateKey.LAST_MSG_TYPE)
-        handler = self._handlers.get(msg_type)
-        if handler:
-            handler(data, code)
-        else:
-            print(f"Warning: No handler defined for {msg_type}")
-
-    def _handle_room_joined(self, data, code):
-        room_id = data.get(Contract.ROOM_ID)
-        topic = data.get(Contract.TOPIC)
-        if room_id and room_id not in self.rooms:
-            new_room = ChatRoom(self.chat_container, self.chat_service, room_id, topic)
-            self.rooms[room_id] = new_room
-            self.switch_room(room_id)
-
-    def _handle_history(self, data, code):
-        room_id = data.get(Contract.ROOM_ID)
-        if room_id in self.rooms:
-            self.rooms[room_id].update_older_messages(data.get(Contract.MSGS, []))
-            self.rooms[room_id].is_loading = False
-
-    def _handle_new_chat_msg(self, data, code):
-        room_id = data.get(Contract.ROOM_ID)
-        if room_id in self.rooms:
-            is_me = (data.get(Contract.SENDER_PID) == self.gui_state.get_state(StateKey.PUBLIC_ID))
-            self.rooms[room_id].handle_incoming_message(
-                sender=data.get(Contract.DISPLAY_NAME),
-                text=data.get(Contract.CONTENT),
-                is_me=is_me
-            )
-
-    def switch_room(self, room_id):
-        if self.current_room_id in self.rooms:
-            self.rooms[self.current_room_id].hide()
-        self.current_room_id = room_id
-        if room_id in self.rooms:
-            self.rooms[room_id].show()
-"""
-
-#0A1929
-class ChatController(ctk.CTkFrame):
-    def __init__(self, parent, gui_state, services):
-        super().__init__(parent, fg_color='#0D1B2A')
-        self.gui_state = gui_state
-        self.chat_service = services['chat']
-        self.rooms = {}
-        self.current_room_id = None
-
-
-
-        self.header = ctk.CTkFrame(self, fg_color='#0B131E', corner_radius=0)
-
-        self.title = ctk.CTkLabel(self.header, fg_color='#0B131E', font = ('Hebbo', 24, 'bold'), text_color='#B0903D', text= "//נצ\"ח להנצחת המורשת הישראלית")
-        self.title.pack(side='right', padx=10, pady=10)
-        self.status_dot = ctk.CTkFrame(self.header, width=8, height=8, corner_radius=4, fg_color="#2ECC71")
-        self.status_dot.pack(side="right", padx=(0, 12), pady=12)
-
-        self.status_label = ctk.CTkLabel(
-            self.header,
-            text="מערכת פעילה",
-            font=("Heebo", 15, "bold"),
-            text_color="#B0903D"
-        )
-        self.status_label.pack(side="right", padx=8)
-        self.header.grid(row=0, column=1, sticky='nsew')
-        self._timer_id = None
-        self.gui_state.register(StateKey.CODE, self._update_status_display)
-
-        self.navigation = ctk.CTkFrame(self, fg_color='#0D1B2A', corner_radius=0, border_width=0)
-        self.navigation.grid(row=1, column=0, sticky='nsew')
-
-        self.menu = Menu(self.navigation, self.gui_state)
-        self.menu.add_btn("בית 🏠")
-        self.menu.add_btn('קבוצות 👨‍👩‍👧', lambda: self.show_screen('chat'))
-        self.menu.add_btn('צור קבוצה ➕', lambda: self.show_screen('actions'))
-        self.menu.add_btn('הצטרפות 👋', lambda: self.show_screen('actions'))
-        self.menu.pack(side='top', fill='x')
-
-        self.sidebar = NavSidebar(self.navigation, self.chat_service, self.gui_state, self.show_screen)
-        self.sidebar.pack(fill= 'both', expand=True)
-
-        self.grid_columnconfigure(0, weight=0)
-        self.grid_columnconfigure(1, weight=1)
+        self.grid_columnconfigure(1, weight=7)
         self.grid_rowconfigure(0, weight=0)
         self.grid_rowconfigure(1, weight=1)
 
-        self.main_container = ctk.CTkFrame(self, fg_color="#0B131E", corner_radius=0)
-        self.main_container.grid(row=1, column=1, sticky='nsew')
+        self.header= ctk.CTkFrame(self, fg_color=self.theme['header_bg'], corner_radius=20, height=65)
+        self.header.pack_propagate(False)
+        self.header.grid(row=0, column=1, sticky='ew', padx=(0,10), pady=10)
 
-        self.display_screen = ctk.CTkFrame(self.main_container, fg_color="transparent", corner_radius=0)
-        self.display_screen.place(relx=0.5, rely=0.5, anchor="center", relwidth=1, relheight=1)
-        self.label_name = ctk.CTkLabel(
-            self.display_screen,
-            text='ברוך הבא למערכת נצ"ח',
-            font=('Heebo', 28, 'bold'),
-            text_color='#B0903D'
+
+        self.left_mask = ctk.CTkFrame(self.header, fg_color='transparent', corner_radius=0, width=30)
+        self.left_mask.place(relx=0, rely=0, relheight=0.99)
+
+        self.status_frame = ctk.CTkFrame(self.header, fg_color='transparent', corner_radius=0)
+        self.status_frame.pack(side='right', padx=30)
+
+        self.status_dot = ctk.CTkFrame(self.status_frame, corner_radius=30, fg_color= '#2ECC71', width=10, height=10)
+        self.status_dot.pack(side='right', padx=10)
+        self.status_label= ctk.CTkLabel(self.status_frame, text='מערכת פעילה',  anchor='e', font=('Heebo', 12, 'bold'), width=150)
+        self.status_label.pack(fill='both', padx=10)
+
+        self._timer_id = None
+
+        self.title_label = ctk.CTkLabel(
+            self.header,
+            text='נצ"ח - להנצחת המורשת הישראלית',
+            text_color='#B0903D',
+            font=('Heebo', 35, 'bold'),
+            anchor='e'
         )
-        self.label_name.pack(side='top', padx=(0, 12), pady=12)
+        self.title_label.pack(side='right', padx=10)
 
-        self.chat_container = ctk.CTkFrame(self.main_container, fg_color="transparent", corner_radius=20, bg_color= 'transparent')
 
-        self.actions_container= ActionsScreen(self.main_container, self.gui_state, self.chat_service)
 
-        self.current_screen = None
+        self.navigation_frame= ctk.CTkFrame(self, fg_color= self.theme['sidebar_slate'], corner_radius=20)
+        self.navigation_frame.grid(column=0, row=1, sticky="nsew", padx=(20,0), pady=(0,50))
+
+        self.switch_section = ctk.CTkFrame(self, fg_color= self.theme['sidebar_slate'], corner_radius=0, height=8)
+        self.switch_section.grid(column=0, row=0, padx=(20,0), sticky="nsew", pady=0)
+
+        self.appearance_mode_switch = ctk.CTkSwitch(
+            self.switch_section,
+            text="🌙",
+            font= ('Heebo', 15, 'bold'),
+            command=self.toggle_appearance_mode,
+            fg_color=self.theme['gold'][1],
+            progress_color=self.theme['gold'][1]
+        )
+        self.appearance_mode_switch.select()
+        self.appearance_mode_switch.pack(pady=20, padx=5)
+
+        self.sidebar= Menu(self.navigation_frame, self.gui_state, fg_color='transparent')
+
+        self.sidebar.pack(side='top', fill='x')
+        self.nav_sidebar= NavSidebar(self.navigation_frame, self.chat_service, self.gui_state)
+        self.nav_sidebar.pack(fill='both', expand=True, padx=10, pady=10)
+
         self.screens = {
-            'chat': self.chat_container,
-            'actions': self.actions_container
+            'groups': ChatScreen(self, self.gui_state, self.chat_service),
+            'join': HotScreen(self, self.gui_state, self.chat_service, on_create_callback=lambda: self.sidebar.handle_click(2, lambda: self.show_screen('create'))),
+            'create': CreateScreen(self, self.gui_state, self.chat_service),
+            'home': UserDetailsOverlay(self, self.gui_state),
         }
+        self.current_screen = None
 
-        self.main_container.pack_propagate(False)
+        self.gui_state.register(StateKey.CODE, self._update_status)
+        self.gui_state.register(StateKey.ROOMS_UI_SIGNAL, self.sync_user_rooms)
+        self.gui_state.register(StateKey.TOPICS_UI_SIGNAL, self.sync_user_topics)
+        self.gui_state.register(StateKey.ROLE, self.setup_role_ui)
 
-        self.message_view = ScrollableSectionFrame(self.chat_container, self.gui_state, self.chat_service,'קבוצה')
-        self.message_view.pack(expand=True, fill="both", padx=15, pady=5)
+    def setup_role_ui(self, role):
+        if not role:
+            return
 
-        self.input_frame = ctk.CTkFrame(self.chat_container, fg_color="transparent", height=80)
-        self.input_frame.pack(fill="x", padx=15, pady=(5, 15))
+        config = CHAT_ROLES_CONFIG.get(role)
+        if not config:
+            return
 
-        self.msg_entry = ctk.CTkEntry(self.input_frame, placeholder_text="...הקלד הודעה", font=("Heebo", 14),
-                                      height=45, fg_color="#1A242F", border_width=0, justify="right")
-        self.msg_entry.pack(side="right", expand=True, fill="x", padx=(10, 0))
-        self.msg_entry.bind("<Return>", lambda e: self.send_message())
+        self.title_label.configure(text=config[ChatUIKey.DASHBOARD_TITLE])
 
-        self.send_btn = ctk.CTkButton(self.input_frame, text="➤", width=60, height=45, font=("Arial", 30),
-                                      fg_color="#B0903D", hover_color="#8C7230", text_color="#0A2140", corner_radius=200,
-                                      command=self.send_message)
+        self.sidebar.add_btn("בית 🏠", lambda: self.show_screen('home'))
+        self.sidebar.add_btn('קבוצות 👨‍👩‍👧', lambda: self.show_screen('groups'))
 
-        self.send_btn.pack(side="left")
+        if config[ChatUIKey.CAN_CREATE_ROOM]:
+            self.sidebar.add_btn('צור קבוצה ➕', lambda: self.show_screen('create'))
 
-        self._handlers = {
-            MsgType.JOIN_ROOM: self._handle_room_joined,
-            MsgType.CREATE_CHAT_ROOM: self._handle_room_joined,
-            MsgType.GET_OLDER_MESSAGES: self._handle_history,
-            MsgType.RECEIVE_MSG: self._handle_new_chat_msg
-        }
+        sidebar_text = "הצטרפות 👋" if role == UserRole.STUDENT else "מאגר נושאים 📚"
+        self.sidebar.add_btn(sidebar_text, lambda: self.show_screen('join'))
 
-        for m_type in self._handlers.keys():
-            self.chat_service.dispatcher.register(m_type, self._main_dispatch_gate)
+    def handle_topic_action(self, action_key, topic):
+        if action_key == 'JOIN':
+            self.chat_service.join_room_by_category(topic.get('category'))
 
-        self._register_handlers()
-        self.gui_state.register(StateKey.DISPLAY_NAME, self._update_display_name)
+        elif action_key == 'CREATE':
+            selected_title = topic.get('title')
+            create_screen = self.screens['create']
 
+            if selected_title:
+                create_screen.topic_dropdown.set(selected_title)
+                create_screen._on_topic_selection_changed(selected_title)
 
+            self.sidebar.handle_click(2, self.show_screen('create'))
 
+            print(f"[GUI Action] Template loaded. Moved to CreateScreen workspace.")
+
+    def sync_user_rooms(self, payload):
+        pass
+
+    def sync_user_topics(self, payload):
+        if not payload:
+            return
+
+        join_screen = self.screens['join']
+
+        new_items = payload.get("items", [])
+        on_top = payload.get("on_top", False)
+        is_end = payload.get("end_of_data", False)
+
+        print(f"[DEBUG-GUI] Received {len(new_items)} items from state. End of data? {is_end}")
+
+        current_scroll_pos = join_screen.scrollable_area._parent_canvas.yview()
+
+        current_role = self.gui_state.get_state(StateKey.ROLE)
+        button_factory = TOPIC_ACTIONS_REGISTRY.get(current_role, lambda t: [])
+
+        for topic in new_items:
+
+            raw_buttons = button_factory(topic)
+            live_buttons = []
+
+            for btn_conf in raw_buttons:
+                live_btn = btn_conf.copy()
+                act_key = live_btn.pop('action_key')
+
+                live_btn['command'] = lambda ak=act_key, t=topic: self.handle_topic_action(ak, t)
+                live_buttons.append(live_btn)
+
+            join_screen.add_topic_card(
+                id=topic.get('id'),
+                title=topic.get('title'),
+                summary=topic.get('summary'),
+                category=topic.get('category'),
+                url=topic.get('url'),
+                on_top=on_top,
+                btn_configs=live_buttons
+            )
+
+        join_screen.update_idletasks()
+
+        if is_end:
+            join_screen.all_topics_downloaded = True
+            print("[DEBUG-GUI] Download complete. Reached true end of database.")
+
+        if on_top and new_items:
+            join_screen.scrollable_area._parent_canvas.yview_moveto(current_scroll_pos[0])
+
+        self.after(100, join_screen.release_scroll_lock)
 
     def show_screen(self, screen_name):
-        if screen_name == self.current_screen or screen_name not in self.screens:
+        if screen_name not in self.screens or self.current_screen == screen_name:
             return
 
         if self.current_screen:
-            self.screens[self.current_screen].pack_forget()
-        self.screens[screen_name].pack(fill="both", expand=True, padx=20, pady=10)
+            self.screens[self.current_screen].grid_remove()
+
+        self.screens[screen_name].grid(row=1, column=1, sticky="nsew", pady= (0,50), padx=10)
         self.current_screen = screen_name
 
-    def _update_display_name(self, display_name):
-        if display_name:
-            log_text = ',ברוכים הבאים' if self.gui_state.get_state(StateKey.CODE)== MsgCodes.SIGNUP_SUCCESS else ',ברוכים השבים'
-            self.label_name.configure(text=  f'{display_name} {log_text}')
-    def _update_status_display(self, code):
-        if 200<=code<300:
+    def toggle_appearance_mode(self):
+        if self.appearance_mode_switch.get() == 1:
+            self.change_appearance_mode_event("dark")
+            self.appearance_mode_switch.configure(text='🌙')
+        else:
+            self.change_appearance_mode_event("light")
+            self.appearance_mode_switch.configure(text='☀️')
+
+    def change_appearance_mode_event(self, new_mode):
+        self.update_idletasks()
+        ctk.set_appearance_mode(new_mode)
+        self.update()
+
+    def _update_status(self, code=None):
+        if not code:
             return
+
+        payload = self.gui_state.get_state(StateKey.LAST_PAYLOAD) or {}
+
+        expiry = payload.get(Contract.EXPIRY)
+
+
+        if self._is_in_penalty and expiry is None:
+            return
+
         if self._timer_id:
             self.after_cancel(self._timer_id)
             self._timer_id = None
 
-        color_theme= ResponseTranslator.get_color(code)
-        self.status_dot.configure(fg_color=color_theme)
-        self.status_label.configure(text=ResponseTranslator.get_message(code), text_color=color_theme)
-        self._timer_id= self.after(5000, self._reset_status)
+        if expiry is not None:
+            self._is_in_penalty = True
+            self.status_dot.configure(fg_color="red")
+            self._update_countdown(expiry, code)
+            return
+
+        display_text = ResponseTranslator.get_message(code, **payload)
+        display_color = ResponseTranslator.get_color(code)
+
+        self.status_dot.configure(fg_color=display_color)
+        self.status_label.configure(text=display_text, text_color=display_color)
+
+        self._timer_id = self.after(5000, self._reset_status)
+
+    def _update_countdown(self, remaining, code):
+        if self._timer_id:
+            self.after_cancel(self._timer_id)
+            self._timer_id = None
+
+        if remaining > 0:
+            display_text = ResponseTranslator.get_message(code, expiry=remaining)
+            self.status_label.configure(text=display_text, text_color="red")
+
+            self._timer_id = self.after(1000, self._update_countdown, remaining - 1, code)
+        else:
+            self._reset_status()
 
     def _reset_status(self):
         if self._timer_id:
             self.after_cancel(self._timer_id)
-        self._timer_id = None
+            self._timer_id = None
+
+        # 🟢 שחרור המנעול הויזואלי קריטי כאן כדי לאפשר חזרה לשגרה
+        self._is_in_penalty = False
+
+        self.gui_state.set_state(StateKey.CODE, '')
 
         if self.gui_state.get_state(StateKey.CONNECTED):
             self.status_label.configure(text="מערכת פעילה", text_color="#B0903D")
             self.status_dot.configure(fg_color="#2ECC71")
-
-    def _register_handlers(self):
-        self._handlers = {
-            MsgType.JOIN_ROOM: self._handle_room_joined,
-            MsgType.CREATE_CHAT_ROOM: self._handle_room_joined,
-            MsgType.RECEIVE_MSG: self._handle_new_chat_msg
-        }
-        for m_type in self._handlers.keys():
-            self.chat_service.dispatcher.register(m_type, self._main_dispatch_gate)
-
-    def send_message(self):
-        text = self.msg_entry.get().strip()
-        if text and self.current_room_id:
-            payload = {Contract.ROOM_ID: self.current_room_id, 'content': text}
-            self.chat_service.dispatcher.send_msg(MsgType.SEND_MSG, payload)
-            self.msg_entry.delete(0, 'end')
-
-    def _main_dispatch_gate(self, data, code):
-        msg_type = self.gui_state.get_state(StateKey.LAST_MSG_TYPE)
-        handler = self._handlers.get(msg_type)
-        if handler:
-            handler(data, code)
         else:
-            print(f"Warning: No handler defined for {msg_type}")
-
-    def _handle_room_joined(self, data, code):
-        room_id = data.get(Contract.ROOM_ID)
-        topic = data.get(Contract.TOPIC)
-        if room_id and room_id not in self.rooms:
-            new_room = ChatRoom(self.chat_container, self.chat_service, room_id, topic)
-            self.rooms[room_id] = new_room
-            self.switch_room(room_id)
-
-    def _handle_history(self, data, code):
-        room_id = data.get(Contract.ROOM_ID)
-        if room_id in self.rooms:
-            self.rooms[room_id].update_older_messages(data.get(Contract.MSGS, []))
-            self.rooms[room_id].is_loading = False
-
-    def _handle_new_chat_msg(self, data, code):
-        room_id = data.get(Contract.ROOM_ID)
-        if room_id in self.rooms:
-            is_me = (data.get(Contract.SENDER_PID) == self.gui_state.get_state(StateKey.PUBLIC_ID))
-            self.rooms[room_id].handle_incoming_message(
-                sender=data.get(Contract.DISPLAY_NAME),
-                text=data.get(Contract.CONTENT),
-                is_me=is_me
-            )
-
-    def switch_room(self, room_id):
-        if self.current_room_id in self.rooms:
-            self.rooms[self.current_room_id].hide()
-        self.current_room_id = room_id
-        if room_id in self.rooms:
-            self.rooms[room_id].show()
-
-
-
-
-CHAT_THEMES = {
-    "classic": ('#F2EAD6', '#e4f0d0'),
-    "moreshet": ('#CB883A', '#FFF3B0'),
-    "gray": ('brown', '#e4f0d0'),
-    "design": ('#b4b4b4', '#F2F3F4'),
-    "retro": ('#CB883A', '#e4f0d0'),
-    "nature": ('#648B1A', '#C6E788'),
-    "pink": ('#E7E4E6', 'white'),
-    "Gilboa iris": ('#495993', '#778CC8'),
-    "flower": ('#e4f0d0', '#fffcf7'),
-    "hermon": ('#7097ab', '#d3e7ee'),
-    "dark": ('#313647', '#435663'),
-    "negev": ('#C1856D', '#E6CFA9'),
-    "traditional spirit": ("#F5E6C8", 'gray86'),
-    "yellow": ('#E1F089', '#EFFF92'),
-    "green": ('#6ACBB4', '#98F3DE'),
-    "jerusalem stone": ('#F5E6C8', '#dbdbb5'),
-    'IDF': ('#4B5320', '#8B7355'),
-    'Galil': ('#3B7A57', '#A7D88C'),
-    'yehuda desert': ('#E1B87F', '#D1A66A'),
-    'dead_sea': ('#F2F2E1', '#4A7D7C'),
-    'Israel flag': ('#0038B8', '#FFFFFF')
-    }
+            self.status_label.configure(text="מנותק מהשרת", text_color="red")
+            self.status_dot.configure(fg_color="red")

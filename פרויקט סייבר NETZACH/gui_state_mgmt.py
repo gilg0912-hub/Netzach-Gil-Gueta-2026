@@ -14,16 +14,24 @@ class GUI_State:
             StateKey.CODE: "",
             StateKey.DISPLAY_NAME: '',
             StateKey.SHOW_USER_INFO: False,
-            StateKey.USERNAME: "",
+
+            # --- השינוי כאן: רק IDENTITY נשאר ---
             StateKey.IDENTITY: "",
-            StateKey.GMAIL: "",
+
+            StateKey.EMAIL: "",
             StateKey.ROLE: "",
-            StateKey.LAST_PAYLOAD:None,
+            StateKey.LAST_PAYLOAD: None,
             StateKey.LAST_MSG_TYPE: None,
-
+            StateKey.TOKEN: None,
             StateKey.CURRENT_ROOM_ID: None,
-        }
-
+            StateKey.SYNC_ROOMS: [],
+            StateKey.SYNC_TOPICS: [],
+            StateKey.SYNC_MESSAGES: [],
+            StateKey.TOPICS_UI_SIGNAL: None,
+            StateKey.ROOMS_UI_SIGNAL: None,
+            StateKey.MESSAGES_UI_SIGNAL: None,
+            StateKey.RELEASE_BTNS: 'normal',
+            }
         # יצירת רשימת מאזינים לכל מפתח
         self.listeners = {k: [] for k in self.state.keys()}
 
@@ -94,18 +102,18 @@ class ResponseTranslator:
         # הצלחות
         MsgCodes.PENDING: "...הבקשה בטיפול, אנא המתן",
         MsgCodes.OTP_SENT: ":קוד אימות נשלח לתיבת המייל שלך\n{email}",
-
+        MsgCodes.SUCCESS: '',
         # שגיאות לקוח
         MsgCodes.INVALID_FIELDS: ".אחד או יותר מהשדות שהזנת אינם תקינים",
         MsgCodes.UNAUTHORIZED: ".שם המשתמש או הסיסמה שגויים",
         MsgCodes.CONFLICT: ".שם המשתמש או האימייל כבר קיימים במערכת",
-        MsgCodes.FLOOD_WARNING: ".קצב הפעולות מהיר מדי. נא להמתין:",
+        MsgCodes.FLOOD_WARNING: ".קצב הפעולות מהיר מדי. נא להמתין: {expiry}",
         MsgCodes.TOO_MANY_ATTEMPTS: ".יותר מדי ניסיונות כושלים. החשבון ננעל זמנית",
         MsgCodes.SESSION_EXPIRED: ".פג התוקף של קוד האימות",
         MsgCodes.ACCESS_DENIED: "נחסמת! נסה שוב בעוד:",
         MsgCodes.INVALID_OTP: ":קוד האימות שהזנת שגוי, נסה שוב\n{email}\n(ניסיון {attempts} מתוך 3)",
         MsgCodes.BLOCKED_EMAIL: "יותר מדי ניסיונות למייל זה. נסה שוב מאוחר יותר",
-        MsgCodes.OTP_RESENT: 'קוד אימות נשלח מחדש למייל: {email}',
+        MsgCodes.OTP_RESENT: ':קוד אימות נשלח מחדש למייל\n {email}',
 
 
         # שגיאות שרת
@@ -113,7 +121,9 @@ class ResponseTranslator:
         MsgCodes.INTERNAL_SERVER_ERROR: ".שגיאת שרת פנימית. הצוות הטכני עודכן",
         MsgCodes.NOT_FOUND: ".בקשה לא מוכרת נשלחה לשרת",
         MsgCodes.CONNECTION_ESTABLISHED: "חיבור חודש בהצלחה",
-        MsgCodes.CONNECTION_LOST: '...החיבור אבד'
+        MsgCodes.CONNECTION_LOST: '...החיבור אבד',
+
+        MsgCodes.ROOM_NOT_FOUND: 'לא קיים חדר פנוי כעת'
 
     }
 
@@ -125,7 +135,7 @@ class ResponseTranslator:
     @classmethod
     def get_message(cls, code, **data):
 
-        template = cls._MESSAGES.get(code, f"שגיאה לא ידועה ({code})")
+        template = cls._MESSAGES.get(code, f" שגיאה לא ידועה ({code})")
         try:
             return template.format(**data)
         except (KeyError, ValueError):

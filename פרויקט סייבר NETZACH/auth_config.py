@@ -1,11 +1,6 @@
 from enum import StrEnum
-from app_constants import MsgType, Contract, Validator,MsgCodes
+from app_constants import MsgType, Contract, Validator,MsgCodes, UserRole
 
-
-class UserRole(StrEnum):
-    STANDARD = "standard"
-    STUDENT = "student"
-    TEACHER = "teacher"
 
 class FieldType(StrEnum):
     USERNAME = 'username'
@@ -20,7 +15,10 @@ class ScreensName(StrEnum):
     STANDARD_LOGIN = 'standard_login'
     STANDARD_SIGNUP = 'standard_signup'
     TEACHER_LOGIN = 'teacher_login'
+    TEACHER_SIGNUP = 'teacher_signup'
     STUDENT_LOGIN = 'student_login'
+    STUDENT_SIGNUP = 'student_signup'
+
     FORGOT_PW = 'forgot_pw'
     OTP = 'otp'
 
@@ -35,7 +33,7 @@ class UIKey(StrEnum):
 
 BASE_STYLE = {
     'width': 220, 'height': 50, 'fg_color': "transparent",
-    'corner_radius': 15, 'border_width': 2, 'font': ("David", 22, "bold"), 'cursor': "hand2"
+    'corner_radius': 15, 'border_width': 2, 'font': ("hebbo", 22, "bold"), 'cursor': "hand2"
 }
 
 
@@ -44,11 +42,11 @@ STYLE_CTK= {'width':150,
             'fg_color': "transparent",
             'corner_radius': 15,
             'border_width': 2,
-            'font': ("David", 20, "bold")}
+            'font': ("hebbo", 20, "bold")}
 
 STYLE_LINK = {
     'fg_color': "transparent", UIKey.TEXT_COLOR: 'white', 'hover_color': "#051224",
-    'width': 100, 'height': 25, 'font': ("David", 18, 'underline')
+    'width': 100, 'height': 25, 'font': ("hebbo", 18, 'underline')
 }
 
 STYLE_NEUTRAL = {
@@ -104,7 +102,8 @@ FIELD_DEFS = {
         'max_len': 6,
         'show_eye': False,
         'pattern':Validator.OTP_CODE,
-    }
+    },
+
 }
 
 
@@ -124,55 +123,51 @@ class CommandKey(StrEnum):
     NONE = "none"
     BACK_SCREEN= 'back_screen'
 
-
-
-
 class UIState(StrEnum):
     NORMAL = "normal"
     DISABLED = "disabled"
     READONLY = "readonly"
 
 UI_POLICIES = {
-    MsgCodes.TOO_MANY_ATTEMPTS: {
-        UIKey.TEXT_COLOR: "orange",
-        "command": CommandKey.LOCK_UI,
-        'keep_alerts': True,
+    # ==========================================
+    # 1. חוקים ספציפיים (צימוד מלא)
+    # ==========================================
+    (MsgCodes.OTP_SENT, MsgType.SIGNUP): {
+        UIKey.TEXT_COLOR: "green",
+        UIKey.COMMAND: CommandKey.SHOW_OTP
     },
-    MsgCodes.INVALID_FIELDS: {
+    (MsgCodes.OTP_SENT, MsgType.FORGOT_PASSWORD): {
+        UIKey.TEXT_COLOR: "green",
+        UIKey.COMMAND: CommandKey.SHOW_OTP
+    },
+    (MsgCodes.OTP_RESENT, MsgType.RESEND_OTP): {
+        UIKey.TEXT_COLOR: "green",
+    },
+
+    # ==========================================
+    # 2. חוקים גנריים (שימוש ב-None כ-Wildcard)
+    # ==========================================
+    (MsgCodes.INVALID_FIELDS, None): {
         UIKey.TEXT_COLOR: "red",
     },
-    MsgCodes.OTP_SENT: {
-        UIKey.TEXT_COLOR: "green",
-        "command": CommandKey.SHOW_OTP
-    },
-    MsgCodes.FLOOD_WARNING: {
+    (MsgCodes.FLOOD_WARNING, None): {
         UIKey.TEXT_COLOR: 'orange',
-        'command': CommandKey.LOCK_UI,
-        UIKey.WAIT_TIME: 60,
+        UIKey.COMMAND: CommandKey.LOCK_UI,
         'keep_alerts': True,
-
     },
-    MsgCodes.UNAUTHORIZED: {
-        UIKey.TEXT_COLOR: "red",
-        'command':CommandKey.BACK_SCREEN,
-
-    },
-    MsgCodes.BLOCKED_EMAIL: {
+    (MsgCodes.TOO_MANY_ATTEMPTS, None): {
         UIKey.TEXT_COLOR: "orange",
-        'command': CommandKey.BACK_SCREEN,
+        UIKey.COMMAND: CommandKey.LOCK_UI,
+        'keep_alerts': True,
     },
-    MsgCodes.INVALID_OTP: {
-        UIKey.TEXT_COLOR: "yellow",
+    (MsgCodes.SESSION_EXPIRED, None): {
+        UIKey.COMMAND: CommandKey.BACK_SCREEN,
     },
-    MsgCodes.OTP_RESENT: {
-        UIKey.TEXT_COLOR: "green",
-    },
-    MsgCodes.SESSION_EXPIRED:
-        {
-            'command': CommandKey.BACK_SCREEN,
-        },
-}
+    (MsgCodes.BLOCKED_EMAIL, None): {
+        UIKey.COMMAND: CommandKey.BACK_SCREEN,
 
+    },
+}
 
 
 AUTH_SCREENS = {
@@ -180,47 +175,15 @@ AUTH_SCREENS = {
         'title': "!ברוכים הבאים",
         'field_types': [],
         'extra_btns': [
-            {'text': "🌍 כניסת משתמשים", 'target': ScreensName.GUEST_CHOICE, **ROLE_STYLES[UserRole.STANDARD]},
+            {'text': "🌍 פורטל משתמשים", 'target': ScreensName.STANDARD_LOGIN, **ROLE_STYLES[UserRole.STANDARD]},
             {'text': "🎓 פורטל תלמידים", 'target': ScreensName.STUDENT_LOGIN, **ROLE_STYLES[UserRole.STUDENT]},
             {'text': "🏫 פורטל סגל הוראה", 'target': ScreensName.TEACHER_LOGIN, **ROLE_STYLES[UserRole.TEACHER]},
             {'text': "!אין חשבון? הירשמו", **STYLE_LINK, 'target': ScreensName.STANDARD_SIGNUP}
         ]
     },
 
-    ScreensName.GUEST_CHOICE: {
-        'title': "כניסת משתמשים",
-        'field_types': [],
-        'style': ROLE_STYLES[UserRole.STANDARD],
-        'extra_btns': [
-            {'text': 'התחברות', 'target': ScreensName.STANDARD_LOGIN, **ROLE_STYLES[UserRole.STANDARD]},
-            {'text': 'הרשמה', 'target': ScreensName.STANDARD_SIGNUP, **ROLE_STYLES[UserRole.STANDARD]}
-        ]
-    },
-
-    ScreensName.STUDENT_LOGIN: {
-        'title': "פורטל תלמידים",
-        'field_types': [FieldType.ID, FieldType.PASSWORD],
-        'confirm_text': 'התחבר/י',
-        'confirm_command': CommandKey.HANDLE_AUTH,
-        Contract.TYPE: MsgType.LOGIN,
-        'style': ROLE_STYLES[UserRole.STUDENT],
-        Contract.ROLE: UserRole.STUDENT,
-        'extra_btns': [{'text': '?שכחת סיסמה', **STYLE_LINK, 'target': ScreensName.FORGOT_PW}]
-    },
-
-    ScreensName.TEACHER_LOGIN: {
-        'title': "פורטל סגל הוראה",
-        'field_types': [FieldType.ID, FieldType.PASSWORD],
-        'confirm_text': 'התחבר/י',
-        'confirm_command': CommandKey.HANDLE_AUTH,
-        Contract.TYPE: MsgType.LOGIN,
-        'style': ROLE_STYLES[UserRole.TEACHER],
-        Contract.ROLE: UserRole.TEACHER,
-        'extra_btns': [{'text': '?שכחת סיסמה', **STYLE_LINK, 'target': ScreensName.FORGOT_PW}]
-    },
-
     ScreensName.STANDARD_LOGIN: {
-        'title': "התחברות",
+        'title': "התחברות משתמש",
         'field_types': [FieldType.USERNAME, FieldType.PASSWORD],
         'confirm_text': 'התחבר/י',
         'confirm_command': CommandKey.HANDLE_AUTH,
@@ -233,15 +196,71 @@ AUTH_SCREENS = {
         ]
     },
 
+    ScreensName.STUDENT_LOGIN: {
+        'title': "פורטל תלמידים",
+        'field_types': [FieldType.ID, FieldType.PASSWORD],
+        'confirm_text': 'התחבר/י',
+        'confirm_command': CommandKey.HANDLE_AUTH,
+        Contract.TYPE: MsgType.LOGIN,
+        'style': ROLE_STYLES[UserRole.STUDENT],
+        Contract.ROLE: UserRole.STUDENT,
+        'extra_btns': [
+            {'text': '?שכחת סיסמה', **STYLE_LINK, 'target': ScreensName.FORGOT_PW},
+            {'text': "!אין חשבון? הירשמו", **STYLE_LINK, 'target': ScreensName.STUDENT_SIGNUP}
+        ]
+    },
+
+    ScreensName.TEACHER_LOGIN: {
+        'title': "פורטל סגל הוראה",
+        'field_types': [FieldType.ID, FieldType.PASSWORD],
+        'confirm_text': 'התחבר/י',
+        'confirm_command': CommandKey.HANDLE_AUTH,
+        Contract.TYPE: MsgType.LOGIN,
+        'style': ROLE_STYLES[UserRole.TEACHER],
+        Contract.ROLE: UserRole.TEACHER,
+        'extra_btns': [
+            {'text': '?שכחת סיסמה', **STYLE_LINK, 'target': ScreensName.FORGOT_PW},
+            {'text': "!אין חשבון? הירשמו", **STYLE_LINK, 'target': ScreensName.TEACHER_SIGNUP}
+        ]
+    },
+
     ScreensName.STANDARD_SIGNUP: {
-        'title': "הרשמה",
+        'title': "הרשמת משתמש",
         'field_types': [FieldType.USERNAME, FieldType.PASSWORD, FieldType.EMAIL],
         'confirm_text': '!הירשמו',
         'confirm_command': CommandKey.HANDLE_AUTH,
         Contract.TYPE: MsgType.SIGNUP,
         'style': ROLE_STYLES[UserRole.STANDARD],
         Contract.ROLE: UserRole.STANDARD,
-        'extra_btns': []
+        'extra_btns': [
+            {'text': "כבר רשום? התחבר עכשיו", **STYLE_LINK, 'target': ScreensName.STANDARD_LOGIN}
+        ]
+    },
+
+    ScreensName.STUDENT_SIGNUP: {
+        'title': "הרשמת תלמיד",
+        'field_types': [FieldType.ID, FieldType.EMAIL, FieldType.PASSWORD],
+        'confirm_text': 'המשך לאימות',
+        'confirm_command': CommandKey.HANDLE_AUTH,
+        Contract.TYPE: MsgType.SIGNUP,
+        'style': ROLE_STYLES[UserRole.STUDENT],
+        Contract.ROLE: UserRole.STUDENT,
+        'extra_btns': [
+            {'text': "כבר רשום? התחבר עכשיו", **STYLE_LINK, 'target': ScreensName.STUDENT_LOGIN}
+        ]
+    },
+
+    ScreensName.TEACHER_SIGNUP: {
+        'title': "הרשמת סגל הוראה",
+        'field_types': [FieldType.ID, FieldType.EMAIL, FieldType.PASSWORD],
+        'confirm_text': 'המשך לאימות',
+        'confirm_command': CommandKey.HANDLE_AUTH,
+        Contract.TYPE: MsgType.SIGNUP,
+        'style': ROLE_STYLES[UserRole.TEACHER],
+        Contract.ROLE: UserRole.TEACHER,
+        'extra_btns': [
+            {'text': "כבר רשום? התחבר עכשיו", **STYLE_LINK, 'target': ScreensName.TEACHER_LOGIN}
+        ]
     },
 
     ScreensName.FORGOT_PW: {
@@ -253,15 +272,14 @@ AUTH_SCREENS = {
         Contract.TYPE: MsgType.FORGOT_PASSWORD,
         'extra_btns': []
     },
-    ScreensName.OTP:
-        {
+
+    ScreensName.OTP: {
         'title': " ",
         'field_types': [FieldType.OTP_CODE],
         'confirm_text': 'Send Code',
         'confirm_command': CommandKey.HANDLE_AUTH,
         'style': ROLE_STYLES[UserRole.STANDARD],
         Contract.TYPE: MsgType.VERIFY_OTP,
-        'extra_btns': [{'text': 'שלח שוב', **STYLE_LINK, 'command': CommandKey.HANDLE_AUTH}],
-        }
+        'extra_btns': [{'text': 'שלח שוב', **STYLE_LINK, 'command': CommandKey.RESEND}],
+    }
 }
-

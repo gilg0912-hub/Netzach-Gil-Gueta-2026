@@ -15,7 +15,7 @@ class Chat_GUI(ctk.CTk):
         self.protocol("WM_DELETE_WINDOW", self.client_disconnects)
         self.user_state = user_state
         self.gui_state = gui_state
-
+        ctk.set_appearance_mode('dark')
 
         self.header = Header(self, self.gui_state)
         self.app_body = AppBody(self, self.gui_state, services)
@@ -24,9 +24,6 @@ class Chat_GUI(ctk.CTk):
 
         self.title("What's Burning")
         self.geometry("1200x900")
-
-        self._set_appearance_mode("dark")
-        ctk.set_appearance_mode("dark")
 
 
         self.grid_configure(self, [1, 8], [1])
@@ -140,18 +137,10 @@ class AppBody(ctk.CTkFrame):
         pywinstyles.apply_style(self.block_screen, "transparent")
         pywinstyles.set_opacity(self.block_screen, color="#0A2140", value=0.2)
 
-        self._modal_shield = ctk.CTkFrame(self, fg_color="#000000")
-        pywinstyles.set_opacity(self._modal_shield, value=0.5)
 
-        self._user_overlay = UserDetailsOverlay(
-            parent=self,
-            gui_state=self.gui_state,
-            close_callback=self._close_profile
-        )
 
         self.gui_state.register(StateKey.LOADING_STATUS, self.block_screen_state)
         self.gui_state.register(StateKey.CONNECTED, self.refresh_block_state)
-        self.gui_state.register(StateKey.SHOW_USER_INFO, self._toggle_user_profile)
 
         self.bg_image = load_ui_image('bottom_final_background.png', size=(1200, 640))
         if self.bg_image:
@@ -177,27 +166,6 @@ class AppBody(ctk.CTkFrame):
             self.block_screen.lift()
         else:
             self.block_screen.place_forget()
-
-
-    def _toggle_user_profile(self, should_show):
-        if should_show:
-            self._user_overlay.refresh_data()
-            self._modal_shield.place(relx=0, rely=0, relwidth=1, relheight=1)
-            self._modal_shield.lift()
-
-            self._user_overlay.place(relx=0.5, rely=0.5, anchor='center')
-            self._user_overlay.lift()
-            self._user_overlay.grab_set()
-        else:
-            self._close_profile()
-
-    def _close_profile(self):
-        self._user_overlay.grab_release()
-        self._user_overlay.place_forget()
-        self._modal_shield.place_forget()
-
-        if self.gui_state.get_state(StateKey.SHOW_USER_INFO):
-            self.gui_state.set_state(StateKey.SHOW_USER_INFO, False)
 
 
     def _handle_auth_navigation(self):

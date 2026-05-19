@@ -1,7 +1,5 @@
 import customtkinter as ctk
 from app_constants import StateKey, Contract, MsgType
-from gui_state_mgmt import ResponseTranslator
-from modals import CreateConnectionWindow
 
 class NavSidebar(ctk.CTkFrame):
     def __init__(self, parent, chat_service, gui_state, callback_show_screen=None):
@@ -15,94 +13,59 @@ class NavSidebar(ctk.CTkFrame):
         self.list_header = ctk.CTkLabel(
             self,
             text="ערוצים פעילים",
-            font=("Heebo", 15, "bold"),
-            text_color="#4A6076",
+            font=("Heebo", 20, "bold"),
+            text_color=("#475569", "#8B949E"),
             anchor="e"
         )
-        self.list_header.pack(fill="x", padx=25, pady=(15, 5))
+        self.list_header.pack(fill="x", padx=10, pady=(15, 5))
 
-        self.rooms_scroll = ctk.CTkScrollableFrame(
+        self.rooms_scroll = RoomsListFrame(
             self,
+            gui_state=gui_state,
+            chat_service=chat_service,
             fg_color="transparent",
-            border_width=1,
-            border_color="#1E4976",
-            scrollbar_button_color="#1E4976",
-            scrollbar_button_hover_color="#B0903D",
-            corner_radius=20
+            border_width=2,
+            border_color=("#E2E8F0", "#30363D"),
+            scrollbar_button_color=("#f59e0b", "#D4AF37"),
+            scrollbar_button_hover_color=("#d97706", "#B0903D"),
+            corner_radius=15,
         )
-
-        self.rooms_scroll._scrollbar.grid_configure(padx=(0, 10))
-        self.rooms_scroll.pack(fill="both", expand=True, pady =5 , padx=10)
-
-        self.gui_state.register(StateKey.CODE, self._update_status_display)
+        self.rooms_scroll.pack(fill="both", expand=True, pady=5, padx=10)
         self._add_mock_rooms()
 
-    def _switch_screen(self, screen_name):
-        if screen_name == 'chat':
-            self.chat_btn.configure(state='disabled')
-            self.action_area.configure(state='normal')
-        else:
-            self.chat_btn.configure(state='normal')
-            self.action_area.configure(state='disabled')
-        self.callback_show_screen(screen_name)
-    def _update_status_display(self, code):
-        if 200<=code<300:
-            return
-        if self._timer_id:
-            self.after_cancel(self._timer_id)
-            self._timer_id = None
-
-        color_theme= ResponseTranslator.get_color(code)
-        self.status_dot.configure(fg_color=color_theme)
-        self.status_label.configure(text=ResponseTranslator.get_message(code), text_color=color_theme)
-        self._timer_id= self.after(5000, self._reset_status)
-
-    def _reset_status(self):
-        if self._timer_id:
-            self.after_cancel(self._timer_id)
-        self._timer_id = None
-
-        if self.gui_state.get_state(StateKey.CONNECTED):
-            self.status_label.configure(text="מערכת פעילה", text_color="#B0903D")
-            self.status_dot.configure(fg_color="#2ECC71")
-
-    def _on_create_click(self):
-        pass
-
-    def _open_connection_dialog(self):
-       pass
-
-    def _on_dialog_submit(self, conn_type, value):
-        payload = {Contract.ROOM_ID: value} if conn_type == Contract.ROOM_ID else {Contract.TOPIC: value}
-        self.chat_service.dispatcher.send_msg(MsgType.JOIN_ROOM, payload)
+    def _on_room_click(self, room_id):
+        self.gui_state.set_state(StateKey.CURRENT_ROOM_ID, room_id)
 
     def _add_mock_rooms(self):
         sample_rooms = [
-            ("Cyber Security", "12", True),
-            ("General Chat", "45", False),
-            ("Physics 101", "3", False),
-            ("Hardware", "1", True),
-            ("Global Dev", "8", False)
+            ("Cyber Security", "12", True, "room_12"),
+            ("General Chat", "45", False, "room_45"),
+            ("Physics 101", "3", False, "room_3"),
+            ("Hardware", "1", True, "room_1"),
+            ("Global Dev", "8", False, "room_8")
         ]
-        for name, count, locked in sample_rooms:
+        for name, count, locked, room_id in sample_rooms:
             symbol = "🔒" if locked else "#"
+
             btn = ctk.CTkButton(
                 self.rooms_scroll,
                 text=f"{name}  {symbol}",
                 anchor="e",
                 fg_color="transparent",
-                hover_color="#132F4C",
+                hover_color=("#F1F5F9", "#132F4C"),
                 height=42,
                 corner_radius=8,
                 font=("Heebo", 13),
-                text_color="#CED4DA"
+                text_color=("#334155", "#CED4DA"),
+                # שימוש ב-lambda עם ברירת מחדל (current_id=room_id) כדי לנעול את המשתנה בלולאה
+                command=lambda current_id=room_id: self._on_room_click(current_id)
             )
-            btn.pack(fill="x", pady=1)
+            btn.pack(fill="x", pady=1, padx=5)
 
 
 class Menu(ctk.CTkFrame):
-    def __init__(self, parent, gui_state):
-        super().__init__(parent, fg_color='transparent', corner_radius=0, border_width=0)
+    def __init__(self, parent, gui_state, **kwargs):
+        super().__init__(parent, corner_radius=0, border_width=0, **kwargs)
 
         self.gui_state = gui_state
         self.buttons = []
@@ -114,28 +77,26 @@ class Menu(ctk.CTkFrame):
         self.grid_columnconfigure(0, minsize=4)
         self.grid_columnconfigure(1, weight=1)
 
-    def add_btn(self, text, command_func = None):
-
+    def add_btn(self, text, command_func=None):
         indicator = ctk.CTkFrame(self, width=4, height=24, fg_color="transparent", corner_radius=0)
         btn = ctk.CTkButton(
             self,
             text=text,
-            text_color='white',
-            height=24,
+            text_color=("#0F172A", "#C9D1D9"),
+            height=36,
             fg_color="transparent",
-            hover_color="#0D1B2A",
-            font=('Hebbo', 18),
+            hover_color=("#F1F5F9", "#475569"),
+            font=('Heebo', 18),
             command=lambda i=self.rows, f=command_func: self.handle_click(i, f)
         )
 
         indicator.grid(row=self.rows, column=0, pady=10, sticky="ns")
-        btn.grid(row=self.rows, column=1, pady=10, padx=(10, 0), sticky="ew")
+        btn.grid(row=self.rows, column=1, pady=10, padx=30, sticky="ew")
 
         self.indicators.append(indicator)
         self.buttons.append(btn)
 
         self.rows += 1
-
 
     def handle_click(self, row, command_func):
         if self.pressed == row:
@@ -143,11 +104,88 @@ class Menu(ctk.CTkFrame):
 
         if self.pressed is not None:
             self.indicators[self.pressed].configure(fg_color="transparent")
-            self.buttons[self.pressed].configure(text_color="white")
+            # חזרה לצבע טקסט רגיל (כהה ב-Light, בהיר ב-Dark)
+            self.buttons[self.pressed].configure(text_color=("#0F172A", "#C9D1D9"))
 
-        self.indicators[row].configure(fg_color="#B0903D")
-        self.buttons[row].configure(text_color="#B0903D")
+        # שימוש בצבע הזהב העמוק (שקריא בשני המצבים) לסימון בחירה
+        self.indicators[row].configure(fg_color=("#f59e0b", "#D4AF37"))
+        self.buttons[row].configure(text_color=("#f59e0b", "#D4AF37"))
 
         if command_func:
             command_func()
         self.pressed = row
+
+
+class RoomsListFrame(ctk.CTkScrollableFrame):
+    def __init__(self, parent, gui_state, chat_service, **kwargs):
+        super().__init__(parent, **kwargs)
+        self._scrollbar.grid_configure(padx=10)
+        self.gui_state = gui_state
+        self.chat_service = chat_service
+
+        self.room_buttons = {}
+
+        self._load_initial_rooms()
+        self.gui_state.register(StateKey.ROOMS_UI_SIGNAL, self._on_rooms_updated)
+
+    def _load_initial_rooms(self):
+        initial_rooms = self.gui_state.get_state(StateKey.SYNC_ROOMS) or []
+        for room_obj in initial_rooms:
+            self._add_or_update_room_button(room_obj, on_top=False)
+
+    def _on_rooms_updated(self, signal_data):
+        if not signal_data:
+            return
+
+        items = signal_data.get("items", [])
+        on_top = signal_data.get("on_top", False)
+
+        for room_obj in items:
+            self._add_or_update_room_button(room_obj, on_top=on_top)
+
+    def _add_or_update_room_button(self, room_obj, on_top=False):
+        # גישה ישירה לתכונות האובייקט
+        r_id = str(room_obj.room_id)
+        topic = room_obj.display_name if room_obj.display_name else "חדר ללא נושא"
+        is_open = room_obj.is_open
+
+        symbol = "🟢" if is_open else "🔒"
+        display_text = f"{topic}  {symbol}"
+
+        if r_id in self.room_buttons:
+            btn = self.room_buttons[r_id]
+            btn.configure(text=display_text)
+
+            if on_top:
+                btn.pack_forget()
+                self._pack_button_at_top(btn)
+        else:
+            btn = ctk.CTkButton(
+                self,
+                text=display_text,
+                anchor="e",
+                fg_color="transparent",
+                hover_color=("#F1F5F9", "#132F4C"),
+                height=42,
+                corner_radius=8,
+                font=("Heebo", 13),
+                text_color=("#334155", "#CED4DA"),
+                command=lambda current_room=room_obj: self._on_room_click(current_room)
+            )
+
+            self.room_buttons[r_id] = btn
+
+            if on_top:
+                self._pack_button_at_top(btn)
+            else:
+                btn.pack(fill="x", pady=2)
+
+    def _pack_button_at_top(self, btn):
+        children = [child for child in self.winfo_children() if isinstance(child, ctk.CTkButton)]
+        if children:
+            btn.pack(fill="x", pady=2, before=children[0])
+        else:
+            btn.pack(fill="x", pady=2)
+
+    def _on_room_click(self, room_obj):
+        self.chat_service.switch_to_room(room_obj)

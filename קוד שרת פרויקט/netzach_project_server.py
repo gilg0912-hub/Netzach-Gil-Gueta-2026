@@ -29,9 +29,11 @@ class Server:
         self.email_service = EmailService("Netzach.GUETA@gmail.com", "euhizienenibsako")
 
         self.ai_handler = AIHandler(api_key="AIzaSyBjGP_jGnfQu7AUvkGWavGtS6xCNg0fsMw", db= self.db)
-        self.chat_manager = ChatManager(self.db, self.ai_handler, self.send_to_client)
+        self.stop_ai_thread = threading.Event()
 
+        #self.start_ai_service()
 
+        self.chat_manager = ChatManager(self.db, self.send_to_client)
 
         self.clients={}
         self.online_users= {}
@@ -51,15 +53,38 @@ class Server:
             MsgType.SEND_MSG: self.chat_manager.process_new_message,
             MsgType.JOIN_ROOM: self.chat_manager.add_user_to_room,
             MsgType.CREATE_CHAT_ROOM: self.chat_manager.create_new_room,
+            MsgType.GET_OLDER_TOPICS: self.chat_manager.handle_older_topics,
+            MsgType.GET_OLDER_MESSAGES: self.chat_manager.handle_older_messages,
 
         }
         self.setup_handlers()
 
-
-
     def setup_handlers(self):
         for k, v in self._handlers.items():
             self.msg_dispatcher.register(k, v)
+
+    def start_ai_service(self):
+        t = threading.Thread(target=self._background_update_loop, daemon=True)
+        t.start()
+
+    def _background_update_loop(self):
+        print("[Server] AI Update Thread is now running.")
+
+        while not self.stop_ai_thread.is_set():
+            try:
+                success = self.ai_handler.update_all_topics()
+
+                if success:
+                    print("[Server] Global update successful.")
+                else:
+                    print("[Server] Global update failed, will retry.")
+
+            except Exception as e:
+                print(f"[Server] Critical error in AI Thread: {e}")
+
+            stopped = self.stop_ai_thread.wait(timeout=60*60*5)
+            if stopped:
+                return
 
     def run(self):
 
@@ -169,8 +194,6 @@ class Server:
 
         return True
 
-
-
     def handle_client(self, sock, data_bytes):
         client = self.clients.get(sock)
         if client:
@@ -229,18 +252,25 @@ class Server:
         print(f"[Routing] User {p_id} registered.")
         client = self.clients.get(sock)
         if client:
-            self.chat_manager.sync_user_rooms(client)
+            rooms_data = self.chat_manager.get_initial_rooms_payload(client)
 
-    def sync_user_rooms(self, client):
-        rooms_data = self.db.get_user_rooms(client.p_id)
+            topics_data = self.ai_handler.get_topics_for_role(client.role)
 
-        sync_msg = ResponseFactory.create(
-            msg_type=MsgType.SYNC_DATA,
-            code=MsgCodes.SUCCESS,
-            raw_data={"rooms": rooms_data}
-        )
+            sync_payload = {
+                Contract.ROOMS: rooms_data,
+                Contract.TOPICS: topics_data
+            }
 
-        self.send_to_client(client.sock, sync_msg)
+            sync_msg = ResponseFactory.create(
+                msg_type=MsgType.SYNC_DATA,
+                code=MsgCodes.SUCCESS,
+                raw_data=sync_payload
+            )
+
+            # 5. שליחה סופית ללקוח
+            self.send_to_client(client.sock, sync_msg)
+
+
 
     def close(self):
         self.db.cursor.close()
@@ -453,7 +483,7 @@ class MsgDispatcher:
 class Client:
     __slots__ = ['sock', 'addr', 'authenticated', 'expected_len',
                  'incoming_buffer', 'outgoing_buffer', 'send_queue',
-                 'role', 'user_info', 'display_name', 'p_id', 'auth_bundle', 'background_tasks', 'pending_disconnect']
+                 'role', 'user_info', 'display_name', 'p_id', 'auth_bundle', 'db_id', 'background_tasks', 'pending_disconnect']
 
     def __init__(self, sock, addr):
         self.sock = sock
@@ -474,6 +504,12 @@ class Client:
         self.display_name=None
         self.background_tasks=[]
         self.auth_bundle = None
+
+    @property
+    def role_config(self):
+        if self.role:
+            return UserRole.get_role_config(self.role)
+        return None
 
     def authorized(self, user_record):
         self.auth_bundle = None
@@ -499,31 +535,41 @@ class AuthHandler:
         # הגדרת המיפוי פעם אחת ב-Constructor
         self._auth_finalize_actions = {
             MsgType.SIGNUP: self._finalize_signup,
-            MsgType.LOGIN: self._finalize_login  # <--- הנתיב החדש
+            MsgType.LOGIN: self._finalize_login,
+            MsgType.FORGOT_PASSWORD: self._finalize_login
         }
-
 
     def process_sign_up(self, client, payload):
         role_label = payload.get(Contract.ROLE)
-        role_config = UserRole.get_role_config(role_label)
-
-        if role_config != UserRole.STANDARD:
-            return ResponseFactory.error(MsgType.SIGNUP, MsgCodes.INVALID_FIELDS)
-
         identifier = payload.get(Contract.IDENTITY)
         password = payload.get(Contract.PASSWORD)
         email = payload.get(Contract.EMAIL)
+
+        validation_type = Contract.USERNAME if role_label == UserRole.STANDARD else Contract.ID
+
         is_valid = (
-                Validator.is_valid_field(role_config.id_field, identifier) and
+                Validator.is_valid_field(validation_type, identifier) and
                 Validator.is_valid_field(Contract.PASSWORD, password) and
-                Validator.is_valid_field(Contract.EMAIL, email)  # תוקן מ-identifier ל-email
+                Validator.is_valid_field(Contract.EMAIL, email)
         )
 
         if not is_valid:
             return ResponseFactory.error(MsgType.SIGNUP, MsgCodes.INVALID_FIELDS)
 
-        if self.db.user_exists(role_config, identifier):
+        if self.db.user_exists(identifier):
             return ResponseFactory.error(MsgType.SIGNUP, MsgCodes.USER_ALREADY_EXISTS)
+
+        if role_label in [UserRole.STUDENT, UserRole.TEACHER]:
+            pre_approved_name = self.db.get_verified_educational_name(identifier, role_label)
+
+            if not pre_approved_name:
+                print(
+                    f"[Security Alert] Identity {identifier} tried to register as {role_label} but is not pre-approved.")
+                return ResponseFactory.error(MsgType.SIGNUP, MsgCodes.ACCESS_DENIED)
+
+            payload[Contract.DISPLAY_NAME] = pre_approved_name
+        else:
+            payload[Contract.DISPLAY_NAME] = identifier
 
         return self._handle_otp_flow(client, payload, MsgType.SIGNUP, email)
 
@@ -617,54 +663,41 @@ class AuthHandler:
         password = user_data.get(Contract.PASSWORD)
         email = user_data.get(Contract.EMAIL)
 
+        display_name = user_data.get(Contract.DISPLAY_NAME)
+
         session_token = os.urandom(16).hex()
         p_id = os.urandom(24).hex()
 
-        final_user_record =  self.db.register_user(role_config, identifier, password, email, p_id, session_token)
-        print('wow', final_user_record)
+        final_user_record =  self.db.register_user(role_config, identifier, password, email, p_id, session_token, display_name)
+
+
         if final_user_record:
             final_user_record[Contract.ROLE] = role_label
-            if final_user_record:
-                final_user_record[Contract.ROLE] = role_label
-                return self._complete_auth_flow(client, final_user_record, MsgType.SIGNUP, MsgCodes.SIGNUP_SUCCESS)
+            return self._complete_auth_flow(client, final_user_record, MsgType.SIGNUP)
 
         return ResponseFactory.error(MsgType.SIGNUP, MsgCodes.USER_ALREADY_EXISTS)
 
     def process_login(self, client, payload):
         identifier = payload.get(Contract.IDENTITY)
         password = payload.get(Contract.PASSWORD)
-        role_label = payload.get(Contract.ROLE)
-        role_config = UserRole.get_role_config(role_label)
-        print(payload)
-        if not role_config:
-            return ResponseFactory.error(MsgType.LOGIN, MsgCodes.INVALID_FIELDS)
 
-
-        user_record = self.db.authenticate_user(role_config, identifier, password)
+        user_record = self.db.authenticate_user(identifier, password)
         if user_record:
 
-            user_record[Contract.ROLE] = role_label
             client.auth_bundle = {Contract.DATA: user_record}
             return self._finalize_login(client)
 
         return ResponseFactory.error(MsgType.LOGIN, MsgCodes.INVALID_FIELDS)
 
-
     def process_forgot_password(self, client, data):
         payload = data.get(Contract.DATA, {})
         email = payload.get(Contract.EMAIL)
-        role_label = payload.get(Contract.ROLE)
-        role_config = UserRole.get_role_config(role_label)
-
-        if role_config!= UserRole.STANDARD:
-            return ResponseFactory.error(MsgType.FORGOT_PASSWORD, MsgCodes.INVALID_FIELDS)
 
         if email:
-            user_record = self.db.get_user_by_email(role_config, email)
+
+            user_record = self.db.get_user_by_email(email)
 
             if user_record:
-
-                user_record[Contract.ROLE] = role_label
                 return self.generate_otp_session(
                     client,
                     user_record,
@@ -672,61 +705,42 @@ class AuthHandler:
                     email
                 )
 
-
-            return ResponseFactory.error(MsgType.FORGOT_PASSWORD, MsgCodes.INVALID_FIELDS)
-
-
         return ResponseFactory.error(MsgType.FORGOT_PASSWORD, MsgCodes.INVALID_FIELDS)
 
     def _finalize_login(self, client):
         user_record = client.auth_bundle.get(Contract.DATA)
-        role_label = user_record.get(Contract.ROLE)
 
-        user_record[Contract.ROLE] = role_label
         if user_record:
-            user_record[Contract.ROLE] = role_label
-            return self._complete_auth_flow(client, user_record, MsgType.LOGIN, MsgCodes.LOGIN_SUCCESS)
+            return self._complete_auth_flow(client, user_record, MsgType.LOGIN)
 
 
         return ResponseFactory.error(MsgType.LOGIN, MsgCodes.DATABASE_ERROR)
 
     def reconnect(self, client, payload):
         token= payload.get(Contract.TOKEN)
-        role_label = payload.get(Contract.ROLE)
-        if role_label and token:
-            role_config = UserRole.get_role_config(role_label)
-            user_info = self.db.get_user_by_token(role_config, token)
+        if token:
+            user_info = self.db.get_user_by_token(token)
 
             if user_info:
-                user_info[Contract.ROLE] = role_label
-                return self._complete_auth_flow(client, user_info, MsgType.RECONNECT, MsgCodes.LOGIN_SUCCESS)
+                return self._complete_auth_flow(client, user_info, MsgType.RECONNECT)
 
         return ResponseFactory.error(MsgType.RECONNECT, MsgCodes.SESSION_EXPIRED)
 
-    def _complete_auth_flow(self, client, user_record, msg_type, msg_code):
-        role_label = user_record.get(Contract.ROLE)
-        role_config = UserRole.get_role_config(role_label)
+    def _complete_auth_flow(self, client, user_record, msg_type):
         p_id = user_record[Contract.PUBLIC_ID]
 
         if msg_type in [MsgType.LOGIN, MsgType.RECONNECT]:
             new_session_token = os.urandom(16).hex()
-            updated_record = self.db.update_user_token(role_config, p_id, new_session_token)
+            updated_record = self.db.update_user_token(p_id, new_session_token)
             if updated_record:
                 user_record.update(updated_record)
 
-        user_record[Contract.ROLE] = role_label
-
-        if Contract.DISPLAY_NAME not in user_record:
-            display_val = user_record.get(role_config.display_name, 'Guest')
-            user_record[Contract.DISPLAY_NAME] = display_val
-
+        client.db_id = user_record.pop(Contract.ID)
         client.authorized(user_record)
 
         self.on_auth_success_callback(p_id, client.sock)
 
-
-        # שליחת התשובה הסופית
-        return ResponseFactory.create(msg_type=msg_type, raw_data=user_record, code=msg_code)
+        return ResponseFactory.create(msg_type=msg_type, raw_data=user_record, code=MsgCodes.SUCCESS)
 
 
 server = Server()

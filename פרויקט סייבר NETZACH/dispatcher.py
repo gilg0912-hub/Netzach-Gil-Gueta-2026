@@ -1,5 +1,7 @@
 from app_constants import *
 from gui_state_mgmt import *
+import threading
+import traceback
 
 class MsgDispatcher:
     def __init__(self, gui_state, msg_manager):
@@ -15,11 +17,9 @@ class MsgDispatcher:
     # ... (send_msg ו-register נשארים ללא שינוי)
 
     def _dispatch(self, msg_type, msg):
-        # 1. חילוץ נתונים מיידי
         code = msg.get(Contract.CODE)
         data = msg.get(Contract.DATA, {})
 
-        # 2. עדכון הסטייט כבר כאן - ה-GUI מגיב מיד!
         self.gui_state.set_state(StateKey.LAST_MSG_TYPE, msg_type)
         self.gui_state.set_state(StateKey.LAST_PAYLOAD, data)
         self.gui_state.set_state(StateKey.CODE, code)
@@ -29,16 +29,29 @@ class MsgDispatcher:
 
         if handler:
             try:
-                handler(data, code)
+                keep_locked = handler(data, code)
+                if not keep_locked:
+                    self.gui_state.set_state(StateKey.RELEASE_BTNS, 'normal')
+                
             except TypeError as e:
+                traceback.print_exc()
                 print(f"Dispatcher Error in {msg_type}: {e}")
 
     def _handle_general_msg(self, data, code):
         self.gui_state.set_state(StateKey.LOADING_STATUS, False)
+        if code == MsgCodes.FLOOD_WARNING:
+            print("Flood Warning", data)
+            threading.Thread(target= self._cooldown_ui, args = (data.get(Contract.EXPIRY),)).start()
+            return True
+        return False
 
+    def _cooldown_ui(self, expiry):
+        time.sleep(expiry)
+        self.gui_state.set_state(StateKey.RELEASE_BTNS, 'normal'
+                                 )
 
     def send_msg(self, msg_type, data):
-
+        self.gui_state.set_state(StateKey.RELEASE_BTNS, 'disabled')
         formatted_msg = RequestFactory.create(msg_type, data)
 
         if formatted_msg:

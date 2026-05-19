@@ -7,7 +7,6 @@ class User_State:
         self._data = {
             StateKey.CONNECTED: False,
             StateKey.IS_ACTIVE: True,
-            StateKey.USERNAME: "",
             StateKey.IDENTITY: None,
             StateKey.TOKEN: None,
             StateKey.AUTHENTICATED: False,
