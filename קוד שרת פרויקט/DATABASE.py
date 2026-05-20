@@ -2,6 +2,8 @@ import sqlite3
 from Protocol import *
 import threading
 import uuid
+import time
+import bcrypt
 
 
 class Database:
@@ -21,9 +23,6 @@ class Database:
 
         return user_data
 
-    # ==========================================
-    # פונקציה חדשה: אימות Mock (משרד החינוך)
-    # ==========================================
     def is_authorized_identity(self, identifier, role):
         with self.db_lock:
             try:
@@ -62,9 +61,19 @@ class Database:
 
     def authenticate_user(self, identity, password):
         with self.db_lock:
-            query = "SELECT * FROM Users WHERE identity = ? AND password = ?"
-            self.cursor.execute(query, (identity, password))
-            return self._clean_user_row(self.cursor.fetchone())
+            query = "SELECT * FROM Users WHERE identity = ?"
+            self.cursor.execute(query, (identity,))
+            user_row = self.cursor.fetchone()
+
+            if not user_row:
+                return None
+
+            stored_hash = user_row[Contract.PASSWORD]
+
+            if bcrypt.checkpw(password.encode('utf-8'), stored_hash.encode('utf-8')):
+                return self._clean_user_row(user_row)
+
+            return None
 
     def user_exists(self, identity):
         with self.db_lock:
@@ -96,13 +105,12 @@ class Database:
                 return None
 
     def get_verified_educational_name(self, identifier, role):
-        with self.db_lock:  # שמירה על בטיחות בריצה מקבילית (Thread-Safe)
+        with self.db_lock:
             try:
                 query = "SELECT pre_approved_name FROM Authorized_Identities WHERE identity = ? AND role = ?"
                 self.cursor.execute(query, (identifier, role))
                 row = self.cursor.fetchone()
 
-                # אם נמצאה רשומה, נשלוף את השם הרשמי. אחרת, נחזיר None.
                 return row['pre_approved_name'] if row else None
 
             except sqlite3.Error as e:
@@ -119,35 +127,65 @@ class Database:
     def get_user_room_ids(self, db_id):
         with self.db_lock:
             query = """
-                SELECT room_id 
-                FROM RoomParticipants 
-                WHERE user_id = ?
+                SELECT r.public_room_id 
+                FROM RoomParticipants rp
+                JOIN ChatRooms r ON rp.room_id = r.id
+                WHERE rp.user_id = ?
             """
             try:
                 self.cursor.execute(query, (db_id,))
                 rows = self.cursor.fetchall()
-                return [row['room_id'] for row in rows]
+                return [row['public_room_id'] for row in rows]
             except Exception as e:
                 print(f"Error fetching rooms: {e}")
                 return []
 
-    def get_room_by_id(self, room_id):
+    def get_room_by_internal_id(self, internal_id):
         with self.db_lock:
             query = "SELECT * FROM ChatRooms WHERE id = ?"
             try:
-                self.cursor.execute(query, (room_id,))
+                self.cursor.execute(query, (internal_id,))
                 row = self.cursor.fetchone()
                 return dict(row) if row else None
             except Exception as e:
-                print(f"Error fetching room by ID: {e}")
+                print(f"Error fetching room by internal ID: {e}")
                 return None
+
+    def get_room_by_public_id(self, public_room_id):
+        with self.db_lock:
+            query = "SELECT * FROM ChatRooms WHERE public_room_id = ?"
+            try:
+                self.cursor.execute(query, (public_room_id,))
+                row = self.cursor.fetchone()
+                return dict(row) if row else None
+            except Exception as e:
+                print(f"Error fetching room by public ID: {e}")
+                return None
+
+    def get_room_by_invite_code(self, invite_code):
+        with self.db_lock:
+            try:
+                query = "SELECT * FROM ChatRooms WHERE invite_code = ?"
+                self.cursor.execute(query, (invite_code,))
+                row = self.cursor.fetchone()
+
+                return dict(row) if row else None
+            except sqlite3.Error as e:
+                print(f"[DB Error] Error fetching room by invite code {invite_code}: {e}")
+                return None
+
+    def room_exists(self, room_id):
+        with self.db_lock:
+            query = "SELECT 1 FROM ChatRooms WHERE public_room_id = ?"
+            self.cursor.execute(query, (room_id,))
+            return self.cursor.fetchone() is not None
 
     def find_available_room_for_user(self, allowed_role, db_id):
         with self.db_lock:
             query = """
                     SELECT * FROM ChatRooms 
                     WHERE allowed_role = ?
-                    AND is_locked = 0
+                    AND is_open = 1
                     AND id NOT IN (
                         SELECT room_id 
                         FROM RoomParticipants 
@@ -163,18 +201,136 @@ class Database:
                 print(f"Find room error: {e}")
                 return None
 
-    def insert_msg(self, room_id, sender_id, content, now, public_msg_id):
+    def insert_new_room(self, public_room_id, category, display_name, created_by, allowed_role, invite_code, is_open=0):
         with self.db_lock:
-            # 🟢 תוקן מ-id ל-room_id בשם העמודה
-            query = "INSERT INTO Messages (room_id, sender_id, content, timestamp, public_id) VALUES (?, ?, ?, ?, ?)"
             try:
-                self.cursor.execute(query, (room_id, sender_id, content, now, public_msg_id))
+                now_timestamp = time.time()
+
+                room_query = """
+                    INSERT INTO ChatRooms (public_room_id, category, is_open, display_name, created_by, invite_code, allowed_role, created_at) 
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """
+                self.cursor.execute(room_query,
+                                    (public_room_id, category, is_open, display_name, created_by, invite_code,
+                                     allowed_role, now_timestamp))
+
+                internal_room_id = self.cursor.lastrowid
+
+                system_content = f"החדר '{display_name}' נוצר בהצלחה! ברוכים הבאים לצ'אט NETZACH."
+                system_msg_public_id = str(uuid.uuid4())
+
+                msg_query = """
+                    INSERT INTO Messages (msg_id, room_id, sender_id, content, timestamp, recipient_id, excluded_id)
+                    VALUES (?, ?, ?, ?, ?, NULL, NULL)
+                """
+                self.cursor.execute(msg_query,
+                                    (system_msg_public_id, internal_room_id, None, system_content, now_timestamp))
+
+                self.conn.commit()
+                print(f"[DB Success] Atomic transaction completed for room {public_room_id}")
+                return True
+
+            except sqlite3.Error as e:
+                print(f"[DB Error] Critical failure, rolling back room creation for {public_room_id}: {e}")
+                self.conn.rollback()
+                return False
+
+    def add_user_to_room_db(self, public_room_id, db_id):
+        with self.db_lock:
+            query = """
+                INSERT OR IGNORE INTO RoomParticipants (room_id, user_id) 
+                VALUES ((SELECT id FROM ChatRooms WHERE public_room_id = ?), ?)
+            """
+            try:
+                self.cursor.execute(query, (public_room_id, db_id))
+                self.conn.commit()
+            except sqlite3.Error as e:
+                print(f"[DB Error] Failed to add user {db_id} to room {public_room_id}: {e}")
+
+    def insert_msg(self, internal_room_id, sender_db_id, content, now, public_msg_id, recipient_db_id=None, excluded_db_id=None):
+        with self.db_lock:
+            query = """
+                INSERT INTO Messages (msg_id, room_id, sender_id, content, timestamp, recipient_id, excluded_id) 
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """
+            try:
+                self.cursor.execute(query, (public_msg_id, internal_room_id, sender_db_id, content, now, recipient_db_id, excluded_db_id))
                 self.conn.commit()
                 return self.cursor.lastrowid
             except Exception as e:
                 print(f"Insert message error: {e}")
                 return None
 
+    def get_older_messages(self, internal_room_id: int, user_db_id: int, anchor_id: str = None,
+                           limit: int = 25) -> dict:
+        fetch_limit = limit + 1
+
+        with self.db_lock:
+            try:
+                if anchor_id is None:
+                    # 🟢 השאילתה קוצצה! אין צורך ב-JOIN עם ChatRooms
+                    query = """
+                        SELECT m.*, u.public_id AS sender_p_id 
+                        FROM Messages m
+                        LEFT JOIN Users u ON m.sender_id = u.id
+                        WHERE m.room_id = ? 
+                          AND (m.recipient_id IS NULL OR m.recipient_id = ?)
+                          AND (m.excluded_id IS NULL OR m.excluded_id != ?)
+                        ORDER BY m.timestamp DESC 
+                        LIMIT ?
+                    """
+                    self.cursor.execute(query, (internal_room_id, user_db_id, user_db_id, fetch_limit))
+                    raw_messages = self.cursor.fetchall()
+
+                else:
+                    anchor_query = "SELECT timestamp FROM Messages WHERE msg_id = ?"
+                    self.cursor.execute(anchor_query, (anchor_id,))
+                    anchor_row = self.cursor.fetchone()
+
+                    if not anchor_row:
+                        return {"items": [], "end_of_data": True}
+
+                    anchor_time = anchor_row['timestamp']
+
+                    query = """
+                        SELECT m.*, u.public_id AS sender_p_id 
+                        FROM Messages m
+                        LEFT JOIN Users u ON m.sender_id = u.id
+                        WHERE m.room_id = ? 
+                          AND (m.recipient_id IS NULL OR m.recipient_id = ?)
+                          AND (m.excluded_id IS NULL OR m.excluded_id != ?)
+                          AND m.timestamp < ? 
+                        ORDER BY m.timestamp DESC 
+                        LIMIT ?
+                    """
+                    self.cursor.execute(query, (internal_room_id, user_db_id, user_db_id, anchor_time, fetch_limit))
+                    raw_messages = self.cursor.fetchall()
+
+                end_of_data = len(raw_messages) <= limit
+                if not end_of_data:
+                    raw_messages = raw_messages[:limit]
+
+                raw_messages.reverse()
+
+                formatted_messages = []
+                for row in raw_messages:
+                    sender_pid = row['sender_p_id'] if row['sender_p_id'] else None
+
+                    formatted_messages.append({
+                        Contract.MSG_ID: str(row['msg_id']),
+                        Contract.SENDER_PID: sender_pid,
+                        Contract.CONTENT: row['content'],
+                        Contract.TIMESTAMP: row['timestamp'],
+                    })
+
+                return {
+                    "items": formatted_messages,
+                    "end_of_data": end_of_data
+                }
+
+            except sqlite3.Error as e:
+                print(f"[DB Error] Failed to fetch older messages for room {internal_room_id}: {e}")
+                return {"items": [], "end_of_data": True}
     def get_topics_paged(self, role_name, before_id=None, limit=5):
         with self.db_lock:
             try:
@@ -212,112 +368,3 @@ class Database:
                 print(f"Save topics error: {e}")
                 return False
 
-    def add_user_to_room_db(self, room_id, db_id):
-        with self.db_lock:
-            query = "INSERT OR IGNORE INTO RoomParticipants (room_id, user_id) VALUES (?, ?)"
-            try:
-                self.cursor.execute(query, (room_id, db_id))
-                self.conn.commit()
-            except sqlite3.Error as e:
-                print(f"[DB Error] Failed to add user {db_id} to room {room_id}: {e}")
-
-    def room_exists(self, room_id):
-        with self.db_lock:
-            query = "SELECT 1 FROM ChatRooms WHERE id = ?"
-            self.cursor.execute(query, (room_id,))
-            return self.cursor.fetchone() is not None
-
-    def insert_new_room(self, room_id, category, display_name, created_by, allowed_role, invite_code, is_open=0):
-        with self.db_lock:
-            try:
-                room_query = """
-                    INSERT INTO ChatRooms (id, category, is_open, display_name, created_by, invite_code, allowed_role) 
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                """
-                self.cursor.execute(room_query,
-                                    (room_id, category, is_open, display_name, created_by, invite_code, allowed_role))
-
-                system_content = f"החדר '{display_name}' נוצר בהצלחה! ברוכים הבאים לצ'אט NETZACH."
-                now_timestamp = time.time()
-
-                system_msg_public_id = str(uuid.uuid4())
-
-                msg_query = """
-                    INSERT INTO Messages (room_id, sender_id, content, timestamp, public_id)
-                    VALUES (?, ?, ?, ?, ?)
-                """
-                self.cursor.execute(msg_query, (room_id, None, system_content, now_timestamp, system_msg_public_id))
-
-                self.conn.commit()
-                print(f"[DB Success] Atomic transaction completed for room {room_id} with system message.")
-                return True
-
-            except sqlite3.Error as e:
-                print(f"[DB Error] Critical failure, rolling back room creation for {room_id}: {e}")
-                self.conn.rollback()
-                return False
-
-    def get_older_messages(self, room_id: str, anchor_id: str = None, limit: int = 25) -> dict:
-        fetch_limit = limit + 1
-
-        with self.db_lock:
-            try:
-                if anchor_id is None:
-                    query = """
-                        SELECT m.*, u.public_id AS sender_p_id 
-                        FROM Messages m
-                        LEFT JOIN Users u ON m.sender_id = u.id
-                        WHERE m.room_id = ? 
-                        ORDER BY m.timestamp DESC 
-                        LIMIT ?
-                    """
-                    self.cursor.execute(query, (room_id, fetch_limit))
-                    raw_messages = self.cursor.fetchall()
-
-                else:
-                    anchor_query = "SELECT timestamp FROM Messages WHERE public_id = ?"
-                    self.cursor.execute(anchor_query, (anchor_id,))
-                    anchor_row = self.cursor.fetchone()
-
-                    if not anchor_row:
-                        return {"items": [], "end_of_data": True}
-
-                    anchor_time = anchor_row['timestamp']
-
-                    query = """
-                        SELECT m.*, u.public_id AS sender_p_id 
-                        FROM Messages m
-                        LEFT JOIN Users u ON m.sender_id = u.id
-                        WHERE m.room_id = ? AND m.timestamp < ? 
-                        ORDER BY m.timestamp DESC 
-                        LIMIT ?
-                    """
-                    self.cursor.execute(query, (room_id, anchor_time, fetch_limit))
-                    raw_messages = self.cursor.fetchall()
-
-                end_of_data = len(raw_messages) <= limit
-                if not end_of_data:
-                    raw_messages = raw_messages[:limit]
-
-                raw_messages.reverse()
-
-                formatted_messages = []
-                for row in raw_messages:
-                    sender_pid = row['sender_p_id'] if row['sender_p_id'] else "System"
-
-                    formatted_messages.append({
-                        Contract.MSG_ID: str(row['public_id']),
-                        Contract.ROOM_ID: str(row['room_id']),
-                        Contract.SENDER_PID: sender_pid,
-                        Contract.CONTENT: row['content'],
-                        Contract.TIMESTAMP: row['timestamp'],
-                    })
-
-                return {
-                    "items": formatted_messages,
-                    "end_of_data": end_of_data
-                }
-
-            except sqlite3.Error as e:
-                print(f"[DB Error] Failed to fetch older messages for room {room_id}: {e}")
-                return {"items": [], "end_of_data": True}

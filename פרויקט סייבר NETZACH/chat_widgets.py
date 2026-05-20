@@ -1,7 +1,7 @@
 import customtkinter as ctk
 from ui_components import TopicCard, RequiredEntry
 import time
-
+import datetime
 
 from app_constants import StateKey, Contract, UserRole
 
@@ -32,7 +32,7 @@ class RoomProfileWindow(ctk.CTkToplevel):
             ("קוד הזמנה:", room_data.invite_code),
             ("סטטוס:", "🟢 פתוח" if room_data.is_open else "🔴 נעול"),
             ("נוצר על ידי:", room_data.created_by),
-            ("תאריך יצירה:", room_data.created_at)
+            ("תאריך יצירה:", time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(room_data.created_at)))
         ]
 
         for title, value in info_items:

@@ -175,7 +175,7 @@ class MsgStructures:
         MsgType.VERIFY_OTP: [{Contract.OTP_CODE}],
         MsgType.RECONNECT: [{Contract.TOKEN}],
         MsgType.JOIN_ROOM: [
-            {Contract.ROOM_ID},
+            {Contract.INVITE_CODE},
             {Contract.CATEGORY}
         ],
         MsgType.CREATE_CHAT_ROOM: [{Contract.DISPLAY_NAME, Contract.CATEGORY, Contract.SUMMARY, Contract.IS_OPEN, Contract.TYPE}],
@@ -217,7 +217,7 @@ class ResponseFactory:
 
 class Validator:
     _PATTERNS = {
-        Contract.EMAIL: r"(?i)^(?!.*\.{2})[a-z0-9!#$%&'*+/=?^_`{|}~.-]{2,64}@gmail\.com$",
+        Contract.EMAIL: r"(?i)^(?!.*\.{2})[a-z0-9!#$&'*+/=?^_`{|}~.-]{2,64}@gmail\.com$",
         Contract.PASSWORD: r"^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,20}$",
         Contract.USERNAME: r"^(?=.*[a-zA-Z])[a-zA-Z0-9]{3,15}$",
         Contract.ID: r"^\d{9}$",

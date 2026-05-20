@@ -52,7 +52,7 @@ class ChatService(BaseService):
     def join_room_by_code(self, room_code):
         if not room_code:
             return
-        payload = {Contract.ROOM_CODE: room_code}
+        payload = {Contract.INVITE_CODE: room_code}
         self.dispatcher.send_msg(MsgType.JOIN_ROOM, payload)
 
     def join_room_by_category(self, category):

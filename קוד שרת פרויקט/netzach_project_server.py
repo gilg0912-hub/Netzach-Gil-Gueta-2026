@@ -2,6 +2,7 @@ import socket
 import queue
 import json
 import select
+import bcrypt
 
 import os
 from AIHandler import AIHandler
@@ -532,7 +533,6 @@ class AuthHandler:
         self.on_auth_success_callback = auth_func
         self.traffic_monitor = traffic_monitor
 
-        # הגדרת המיפוי פעם אחת ב-Constructor
         self._auth_finalize_actions = {
             MsgType.SIGNUP: self._finalize_signup,
             MsgType.LOGIN: self._finalize_login,
@@ -661,6 +661,7 @@ class AuthHandler:
 
         identifier = user_data.get(Contract.IDENTITY)
         password = user_data.get(Contract.PASSWORD)
+        hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
         email = user_data.get(Contract.EMAIL)
 
         display_name = user_data.get(Contract.DISPLAY_NAME)
@@ -668,7 +669,7 @@ class AuthHandler:
         session_token = os.urandom(16).hex()
         p_id = os.urandom(24).hex()
 
-        final_user_record =  self.db.register_user(role_config, identifier, password, email, p_id, session_token, display_name)
+        final_user_record =  self.db.register_user(role_config, identifier, hashed_password, email, p_id, session_token, display_name)
 
 
         if final_user_record:
