@@ -4,7 +4,6 @@ import pywinstyles
 from app_constants import AppScreens, StateKey, MsgType
 from auth_controller import AuthController
 from chat_controller import ChatController
-from modals import UserDetailsOverlay
 from ui_components import AnimatedGifLabel, Loading
 from modals import resize_image, load_ui_image
 

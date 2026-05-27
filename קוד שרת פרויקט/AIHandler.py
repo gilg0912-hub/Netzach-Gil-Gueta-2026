@@ -16,7 +16,7 @@ class AIHandler:
 
         self.allowed_categories = ["ביטחון", "חינוך", "כלכלה", "כללי", "פוליטי"]
         self.current_topics = {}
-        for role in [UserRole.STUDENT, UserRole.STANDARD, UserRole.TEACHER]:
+        for role in [UserRole.STANDARD, UserRole.TEACHER]:
             self.current_topics[role] = self.db.get_topics_paged(role, limit=15)
             print(self.current_topics[role])
 
@@ -26,41 +26,36 @@ class AIHandler:
 
     def build_prompt(self):
         categories_str = ", ".join(self.allowed_categories)
+
+        # יצירת מחרוזת המקורות המאושרים מתוך הרשימות שיובאו
         sources_context = f"""
         APPROVED SOURCES PER ROLE:
-        - STUDENTS: {', '.join(STUDENT_SOURCES)}
         - TEACHERS: {', '.join(TEACHER_SOURCES)}
-        - USTANDARD: {', '.join(STANDARD_SOURCES)}
+        - STANDARD: {', '.join(STANDARD_SOURCES)}
         """
 
         return f"""
-                Act as a professional news analyst and data engineer for an Israeli educational platform.
-                
-                APPROVED SOURCES:
-                STUDENT: {STUDENT_SOURCES}
-                TEACHER: {TEACHER_SOURCES}
-                USTANDARD: {STANDARD_SOURCES}
-                
-                
+        Act as a professional news analyst and data engineer for an Israeli educational platform.
 
-                IMPORTANT: Return ONLY the JSON object. Do not include any analysis, introductory text, or markdown code blocks like ```json. 
-                Just start with '{{' and end with '}}'.
-                
-                Your task: Identify 5 trending news topics in Israel for each role (STUDENTS, TEACHERS, STANDARD), based STRICTLY on the approved sources.
+        {sources_context}
 
-                OUTPUT FORMAT:
-                Return ONLY a valid JSON object. No markdown tags.
-                Structure: {{"STUDENTS": [...], "TEACHERS": [...], "USTANDARD": [...]}}
-                Each topic object MUST contain: "title", "summary", "url", "topic_id", "category".
+        IMPORTANT: Return ONLY the JSON object. Do not include any analysis, introductory text, or markdown code blocks like ```json. 
+        Just start with '{{' and end with '}}'.
 
-                CATEGORY CONSTRAINT:
-                You MUST classify each topic into EXACTLY one of these categories: {categories_str}.
+        Your task: Identify 5 trending news topics in Israel for each role (TEACHERS, STANDARD), based STRICTLY on the approved sources.
 
-                CRITICAL CONSTRAINTS:
-                - For STUDENTS, the summary must be educational, objective, and safe.
-                - All visible Hebrew text must be grammatically perfect and formal.
-                - Ensure the URL is a direct link to the article.
-                """
+        OUTPUT FORMAT:
+        Return ONLY a valid JSON object. No markdown tags.
+        Structure: {{"TEACHERS": [...], "STANDARD": [...]}}
+        Each topic object MUST contain EXACTLY these keys: "title", "summary", "url", "category".
+
+        CATEGORY CONSTRAINT:
+        You MUST classify each topic into EXACTLY one of these categories: {categories_str}.
+
+        CRITICAL CONSTRAINTS:
+        - All visible Hebrew text must be grammatically perfect and formal.
+        - Ensure the URL is a direct link to the article from the approved sources.
+        """
 
     def fetch_trending_topics(self):
         prompt = self.build_prompt()

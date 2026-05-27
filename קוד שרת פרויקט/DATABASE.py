@@ -185,7 +185,7 @@ class Database:
             query = """
                     SELECT * FROM ChatRooms 
                     WHERE allowed_role = ?
-                    AND is_open = 1
+                    AND is_open = 0
                     AND id NOT IN (
                         SELECT room_id 
                         FROM RoomParticipants 
@@ -200,6 +200,38 @@ class Database:
             except Exception as e:
                 print(f"Find room error: {e}")
                 return None
+
+    def get_available_rooms_paged(self, allowed_role, db_id, before_id=None, limit=5, category=None):
+        with self.db_lock:
+            query = """
+                SELECT * FROM ChatRooms 
+                WHERE allowed_role = ?
+                AND id NOT IN (
+                    SELECT room_id FROM RoomParticipants WHERE user_id = ?
+                )
+            """
+            params = [allowed_role, db_id]
+
+            if category:
+                query += " AND category = ?"
+                params.append(category)
+
+            if before_id:
+                query += " AND id < ?"
+                params.append(before_id)
+
+            query += " ORDER BY id DESC LIMIT ?"
+            params.append(limit)
+
+            try:
+                self.cursor.execute(query, tuple(params))
+                rows = self.cursor.fetchall()
+
+                return [dict(row) for row in rows]
+
+            except Exception as e:
+                print(f"[DB Error] Paged rooms fetch error: {e}")
+                return []
 
     def insert_new_room(self, public_room_id, category, display_name, created_by, allowed_role, invite_code, is_open=0):
         with self.db_lock:
@@ -288,7 +320,7 @@ class Database:
                     anchor_row = self.cursor.fetchone()
 
                     if not anchor_row:
-                        return {"items": [], "end_of_data": True}
+                        return {Contract.ITEMS: [], "end_of_data": True}
 
                     anchor_time = anchor_row['timestamp']
 
@@ -324,36 +356,46 @@ class Database:
                     })
 
                 return {
-                    "items": formatted_messages,
+                    Contract.ITEMS: formatted_messages,
                     "end_of_data": end_of_data
                 }
 
             except sqlite3.Error as e:
                 print(f"[DB Error] Failed to fetch older messages for room {internal_room_id}: {e}")
-                return {"items": [], "end_of_data": True}
-    def get_topics_paged(self, role_name, before_id=None, limit=5):
+                return {Contract.ITEMS: [], "end_of_data": True}
+
+    def get_topics_paged(self, role_name, before_id=None, limit=5, category=None):
         with self.db_lock:
             try:
+                query = "SELECT * FROM HotTopics WHERE role = ?"
+                params = [role_name]
+
+                if category:
+                    query += " AND category = ?"
+                    params.append(category)
+
                 if before_id:
-                    query = "SELECT * FROM HotTopics WHERE role = ? AND id < ? ORDER BY id DESC LIMIT ?"
-                    params = (role_name, before_id, limit)
-                else:
-                    query = "SELECT * FROM HotTopics WHERE role = ? ORDER BY id DESC LIMIT ?"
-                    params = (role_name, limit)
-                self.cursor.execute(query, params)
+                    query += " AND id < ?"
+                    params.append(before_id)
+
+                query += " ORDER BY id DESC LIMIT ?"
+                params.append(limit)
+
+                self.cursor.execute(query, tuple(params))
                 rows = self.cursor.fetchall()
+
                 return [dict(row) for row in rows]
+
             except sqlite3.Error as e:
-                print(f"Paged fetch error: {e}")
+                print(f"[DB Error] Paged fetch error in get_topics_paged: {e}")
                 return []
 
     def save_hot_topics(self, topics, role_name):
         with self.db_lock:
             try:
-                query = "INSERT INTO HotTopics (ai_topic_id, category, title, role, url, summary) VALUES (?, ?, ?, ?, ?, ?)"
+                query = "INSERT INTO HotTopics (category, title, role, url, summary) VALUES (?, ?, ?, ?, ?)"
                 for item in topics:
                     values = (
-                        item.get("topic_id", "N/A"),
                         item.get("category", "כללי"),
                         item.get("title", "אין כותרת"),
                         role_name,
@@ -368,3 +410,38 @@ class Database:
                 print(f"Save topics error: {e}")
                 return False
 
+    def get_participants_by_room_id(self, public_room_id):
+        with self.db_lock:
+            query = """
+                SELECT u.public_id, u.display_name 
+                FROM RoomParticipants rp
+                JOIN Users u ON rp.user_id = u.id
+                WHERE rp.room_id = (SELECT id FROM ChatRooms WHERE public_room_id = ?)
+            """
+            try:
+                self.cursor.execute(query, (public_room_id,))
+                rows = self.cursor.fetchall()
+                # מחזיר מילון של {public_id: display_name}
+                return {row['public_id']: row['display_name'] for row in rows}
+            except Exception as e:
+                print(f"[DB Error] Failed to fetch participants: {e}")
+                return {}
+
+    def bulk_add_authorized_users(self, users_list):
+        with self.db_lock:
+            try:
+                query = """
+                    INSERT OR IGNORE INTO Authorized_Identities (identity, role, pre_approved_name) 
+                    VALUES (?, ?, ?)
+                """
+
+                data_tuples = [(u[Contract.IDENTITY], u[Contract.ROLE], u[Contract.FULL_NAME]) for u in users_list]
+
+                self.cursor.executemany(query, data_tuples)
+                self.conn.commit()
+                print(f"[DB Success] Bulk inserted {self.cursor.rowcount} authorized users.")
+                return True
+            except sqlite3.Error as e:
+                print(f"[DB Error] Bulk insert failed: {e}")
+                self.conn.rollback()
+                return False

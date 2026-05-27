@@ -38,7 +38,7 @@ class AuthController(ctk.CTkFrame):
             CommandKey.HANDLE_AUTH: self.handle_auth_request,
             CommandKey.FORGOT_PW: lambda: self.show_screen(ScreensName.FORGOT_PW),
             CommandKey.RESEND: self._resend_otp,
-            CommandKey.SHOW_OTP: lambda: self.show_screen(ScreensName.OTP, False),
+            CommandKey.SHOW_OTP: lambda: self.show_screen(ScreensName.OTP),
             CommandKey.LOCK_UI: self._handle_cooldown,
             CommandKey.BACK_SCREEN: self.back_action,
         }
@@ -181,11 +181,6 @@ class AuthController(ctk.CTkFrame):
         self.gui_state.set_state(StateKey.CODE, '')
         self.change_screen_state(is_locked=True)
         auth_action = AUTH_SCREENS[self.current_screen].get(Contract.TYPE)
-
-        if auth_action == MsgType.SIGNUP:
-            current_role = self.gui_state.get_state(StateKey.ROLE)
-            if current_role:
-                data_from_screen[Contract.ROLE] = current_role
 
         if self.auth_service:
             self.auth_service.handle_auth_request(auth_action, data_from_screen)

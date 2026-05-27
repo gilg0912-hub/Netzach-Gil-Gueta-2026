@@ -1,4 +1,4 @@
-STUDENT_SOURCES = {
+TEACHER_SOURCES = {
     "טכנולוגיה": [
         "https://www.geektime.co.il/",
         "https://techtime.co.il/",
@@ -87,4 +87,3 @@ STANDARD_SOURCES = {
     ]
 
 }
-TEACHER_SOURCES = {}

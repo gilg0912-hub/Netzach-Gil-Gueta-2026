@@ -2,9 +2,9 @@ import customtkinter as ctk
 from app_constants import StateKey, Contract
 from CHAT_config import *
 from navigation import NavSidebar, Menu
-from chat_widgets import ChatScreen, HotScreen, CreateScreen
+from chat_widgets import ChatScreen, JoinScreen, TopicTemplateScreen, CreateScreen, UserDetailsScreen
 from gui_state_mgmt import ResponseTranslator
-from modals import UserDetailsOverlay
+
 
 
 class ChatController(ctk.CTkFrame):
@@ -94,15 +94,17 @@ class ChatController(ctk.CTkFrame):
 
         self.screens = {
             'groups': ChatScreen(self, self.gui_state, self.chat_service),
-            'join': HotScreen(self, self.gui_state, self.chat_service, on_create_callback=lambda: self.sidebar.handle_click(2, lambda: self.show_screen('create'))),
+            'join': JoinScreen(self, gui_state=self.gui_state, chat_service= self.chat_service),
             'create': CreateScreen(self, self.gui_state, self.chat_service),
-            'home': UserDetailsOverlay(self, self.gui_state),
+            'templates': TopicTemplateScreen(self, self.gui_state, self.chat_service,
+                                             lambda: self.sidebar.handle_click(2, self.show_screen('create'))),
+            'home': UserDetailsScreen(self, self.gui_state, self.chat_service),
         }
         self.current_screen = None
 
         self.gui_state.register(StateKey.CODE, self._update_status)
-        self.gui_state.register(StateKey.ROOMS_UI_SIGNAL, self.sync_user_rooms)
-        self.gui_state.register(StateKey.TOPICS_UI_SIGNAL, self.sync_user_topics)
+        self.gui_state.register(StateKey.TOPICS_UI_SIGNAL, self.sync_topic_cards)
+        self.gui_state.register(StateKey.GROUPS_UI_SIGNAL, self.sync_group_cards)
         self.gui_state.register(StateKey.ROLE, self.setup_role_ui)
 
     def setup_role_ui(self, role):
@@ -120,16 +122,18 @@ class ChatController(ctk.CTkFrame):
 
         if config[ChatUIKey.CAN_CREATE_ROOM]:
             self.sidebar.add_btn('צור קבוצה ➕', lambda: self.show_screen('create'))
+            self.sidebar.add_btn('מאגר נושאים 📚', lambda: self.show_screen('templates'))
 
-        sidebar_text = "הצטרפות 👋" if role == UserRole.STUDENT else "מאגר נושאים 📚"
-        self.sidebar.add_btn(sidebar_text, lambda: self.show_screen('join'))
+        if config[ChatUIKey.CAN_JOIN_ROOM]:
+            self.sidebar.add_btn('הצטרפות 👋', lambda: self.show_screen('join'))
 
-    def handle_topic_action(self, action_key, topic):
+    def handle_card_action(self, action_key, card):
+
         if action_key == 'JOIN':
-            self.chat_service.join_room_by_category(topic.get('category'))
+            self.chat_service.join_room(invite_code = card.get(Contract.INVITE_CODE))
 
-        elif action_key == 'CREATE':
-            selected_title = topic.get('title')
+        if action_key == 'CREATE':
+            selected_title = card.get('title')
             create_screen = self.screens['create']
 
             if selected_title:
@@ -140,58 +144,61 @@ class ChatController(ctk.CTkFrame):
 
             print(f"[GUI Action] Template loaded. Moved to CreateScreen workspace.")
 
-    def sync_user_rooms(self, payload):
-        pass
-
-    def sync_user_topics(self, payload):
-        if not payload:
+    def sync_group_cards(self, payload):
+        if not isinstance(payload, dict):
             return
 
-        join_screen = self.screens['join']
+        items = payload.get(Contract.ITEMS, [])
+        end_of_data = payload.get("end_of_data", False)
+        category = payload.get("category", "הכל")
 
-        new_items = payload.get("items", [])
+        target_screen = self.screens['join']
+
+        self._process_items(target_screen, items, payload)
+        target_screen.finalize_load()
+
+    def sync_topic_cards(self, payload):
+        if not isinstance(payload, dict): return
+
+        items = payload.get(Contract.ITEMS, [])
+        end_of_data = payload.get("end_of_data", False)
+
+        category = payload.get("category", "הכל")
+
+        target_screen = self.screens['templates']
+
+        self._process_items(target_screen, items, payload)
+        target_screen.finalize_load()
+
+    def _process_items(self, target_screen, items, payload):
+        if payload.get("end_of_data"):
+            target_screen.update_category_status(category=payload.get("category"), is_end=True)
+
+
+        if not items:
+            target_screen.release_scroll_lock()
+            return
+
         on_top = payload.get("on_top", False)
-        is_end = payload.get("end_of_data", False)
-
-        print(f"[DEBUG-GUI] Received {len(new_items)} items from state. End of data? {is_end}")
-
-        current_scroll_pos = join_screen.scrollable_area._parent_canvas.yview()
-
         current_role = self.gui_state.get_state(StateKey.ROLE)
+
         button_factory = TOPIC_ACTIONS_REGISTRY.get(current_role, lambda t: [])
 
-        for topic in new_items:
+        for item in items:
+            raw_buttons = button_factory(item)
+            live_buttons = self._prepare_buttons(raw_buttons, item)
 
-            raw_buttons = button_factory(topic)
-            live_buttons = []
-
-            for btn_conf in raw_buttons:
-                live_btn = btn_conf.copy()
-                act_key = live_btn.pop('action_key')
-
-                live_btn['command'] = lambda ak=act_key, t=topic: self.handle_topic_action(ak, t)
-                live_buttons.append(live_btn)
-
-            join_screen.add_topic_card(
-                id=topic.get('id'),
-                title=topic.get('title'),
-                summary=topic.get('summary'),
-                category=topic.get('category'),
-                url=topic.get('url'),
+            target_screen.add_card(
+                id=item.get('id'),
+                title=item.get('title'),
+                summary=item.get('summary'),
+                category=item.get('category'),
+                invite_code=item.get('invite_code'),
+                url=item.get('url'),
                 on_top=on_top,
-                btn_configs=live_buttons
+                btn_configs=live_buttons,
             )
-
-        join_screen.update_idletasks()
-
-        if is_end:
-            join_screen.all_topics_downloaded = True
-            print("[DEBUG-GUI] Download complete. Reached true end of database.")
-
-        if on_top and new_items:
-            join_screen.scrollable_area._parent_canvas.yview_moveto(current_scroll_pos[0])
-
-        self.after(100, join_screen.release_scroll_lock)
+        self.after(100, target_screen.release_scroll_lock)
 
     def show_screen(self, screen_name):
         if screen_name not in self.screens or self.current_screen == screen_name:
@@ -202,6 +209,8 @@ class ChatController(ctk.CTkFrame):
 
         self.screens[screen_name].grid(row=1, column=1, sticky="nsew", pady= (0,50), padx=10)
         self.current_screen = screen_name
+
+        self.screens[screen_name].on_show()
 
     def toggle_appearance_mode(self):
         if self.appearance_mode_switch.get() == 1:
@@ -217,13 +226,12 @@ class ChatController(ctk.CTkFrame):
         self.update()
 
     def _update_status(self, code=None):
-        if not code:
+        if not code or 200 <= code < 300:
             return
 
         payload = self.gui_state.get_state(StateKey.LAST_PAYLOAD) or {}
 
         expiry = payload.get(Contract.EXPIRY)
-
 
         if self._is_in_penalty and expiry is None:
             return
@@ -232,14 +240,18 @@ class ChatController(ctk.CTkFrame):
             self.after_cancel(self._timer_id)
             self._timer_id = None
 
+        display_color = ResponseTranslator.get_color(code)
+
         if expiry is not None:
             self._is_in_penalty = True
-            self.status_dot.configure(fg_color="red")
+
+            self.status_dot.configure(fg_color=display_color)
+            self.status_label.configure(text_color=display_color)
+
             self._update_countdown(expiry, code)
             return
 
         display_text = ResponseTranslator.get_message(code, **payload)
-        display_color = ResponseTranslator.get_color(code)
 
         self.status_dot.configure(fg_color=display_color)
         self.status_label.configure(text=display_text, text_color=display_color)
@@ -253,11 +265,23 @@ class ChatController(ctk.CTkFrame):
 
         if remaining > 0:
             display_text = ResponseTranslator.get_message(code, expiry=remaining)
-            self.status_label.configure(text=display_text, text_color="red")
+            self.status_label.configure(text=display_text)
 
             self._timer_id = self.after(1000, self._update_countdown, remaining - 1, code)
         else:
             self._reset_status()
+
+    def _prepare_buttons(self, raw_buttons, topic):
+
+        live_buttons = []
+        for btn_conf in raw_buttons:
+            live_btn = btn_conf.copy()
+            act_key = live_btn.pop('action_key')
+
+            live_btn['command'] = lambda ak=act_key, t=topic: self.handle_card_action(ak, t)
+
+            live_buttons.append(live_btn)
+        return live_buttons
 
     def _reset_status(self):
         if self._timer_id:

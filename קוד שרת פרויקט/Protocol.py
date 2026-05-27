@@ -1,12 +1,17 @@
 from enum import StrEnum, IntEnum, auto, Enum
 import time
+import json
 import secrets
 import string
 import re
 from typing import NamedTuple, Optional
+from cryptography.fernet import Fernet
+
 
 
 class Contract(StrEnum):
+
+    PUBLIC_KEY = 'public_key'
     TYPE = 'type'
     TIMESTAMP = 'timestamp'
     DATA = 'payload'
@@ -25,6 +30,7 @@ class Contract(StrEnum):
     TOKEN = 'session_token'
     PUBLIC_ID = 'public_id'
     DISPLAY_NAME = 'display_name'
+    ITEMS = 'items'
 
 
     OTP_CODE = "otp_code"
@@ -53,7 +59,7 @@ class Contract(StrEnum):
     MSG_ID = 'msg_id'
     ANCHOR_ID = 'anchor_id'
 
-
+    CREATED_BY = 'created_by'
     PARTICIPANTS = "participants"
     TOTAL_PARTICIPANTS = "total_participants"
     EVENT = 'event'
@@ -80,12 +86,16 @@ class RoomEvent(IntEnum):
 # 2. קודי תגובה וסוגי הודעות
 # ==========================================
 class MsgType(StrEnum):
+    KEY_EXCHANGE = 'key_exchange'
     LOGIN = "login"
     SIGNUP = "signup"
     VERIFY_OTP = "verify_otp"
     RESEND_OTP= 'resend_otp'
     RECONNECT = "reconnect"
+
     SYNC_DATA = 'sync_data'
+    AUTH_UPLOAD = 'auth_upload'
+
     ERROR = "error"
     FORGOT_PASSWORD = "forgot_password"
     GENERAL = "general"
@@ -98,30 +108,47 @@ class MsgType(StrEnum):
 
     GET_OLDER_MESSAGES = 'get_older_messages'
     GET_OLDER_TOPICS = 'get_older_topics'
+    GET_OLDER_GROUPS = 'get_older_groups'
+
+
+from enum import IntEnum
 
 
 class MsgCodes(IntEnum):
+    # --- מידע ותשתית כללית (10x) ---
+    CONNECTION_ESTABLISHED = 100
+    CONNECTION_LOST = 102
+
+    # --- תשתית הצפנה ולחיצת יד (11x) ---
+    RSA_KEY = 110
+    SESSION_KEY = 111
+    HANDSHAKE_ESTABLISHED = 112
+
+    # --- הצלחות (2xx) ---
     SUCCESS = 200
+    LOGIN_SUCCESS = 201
+    SIGNUP_SUCCESS = 202
     OTP_SENT = 203
     OTP_RESENT = 204
+    PASSWORD_RESET_SUCCESS = 205
+    PENDING = 207
 
-
+    # --- שגיאות לקוח (4xx) ---
     INVALID_FIELDS = 400
-    AUTH_FAILED = 401
-
-    NOT_FOUND = 404
-    ROOM_NOT_FOUND = 460
-
     SESSION_EXPIRED = 401
-    USER_ALREADY_EXISTS = 409
+    ACCESS_DENIED = 403
+    NOT_FOUND = 404
+    CONFLICT = 409
     BLOCKED_EMAIL = 410
-    FLOOD_WARNING=429
+    FLOOD_WARNING = 429
     INVALID_OTP = 444
     TOO_MANY_ATTEMPTS = 445
-    ACCESS_DENIED = 403
+    ROOM_NOT_FOUND = 460
 
-    DATABASE_ERROR = 306
-    SERVER_ERROR = 500
+    # --- שגיאות שרת (5xx) ---
+    INTERNAL_SERVER_ERROR = 500
+    DATABASE_ERROR = 501
+    SERVICE_UNAVAILABLE = 503
 
 
 class UserRole(StrEnum):
@@ -170,16 +197,19 @@ class MsgStructures:
     }
 
     _REQUESTS = {
-        MsgType.LOGIN: [{Contract.IDENTITY, Contract.PASSWORD}],
+        MsgType.LOGIN: [{Contract.IDENTITY, Contract.PASSWORD, Contract.ROLE}],
         MsgType.SIGNUP: [{Contract.IDENTITY, Contract.PASSWORD, Contract.ROLE, Contract.EMAIL}, {Contract.IDENTITY, Contract.PASSWORD, Contract.ROLE, Contract.EMAIL}],
+        MsgType.FORGOT_PASSWORD: [{Contract.EMAIL}],
         MsgType.VERIFY_OTP: [{Contract.OTP_CODE}],
         MsgType.RECONNECT: [{Contract.TOKEN}],
+        MsgType.AUTH_UPLOAD: [{Contract.ITEMS}],
         MsgType.JOIN_ROOM: [
             {Contract.INVITE_CODE},
             {Contract.CATEGORY}
         ],
-        MsgType.CREATE_CHAT_ROOM: [{Contract.DISPLAY_NAME, Contract.CATEGORY, Contract.SUMMARY, Contract.IS_OPEN, Contract.TYPE}],
-        MsgType.GET_OLDER_TOPICS: [{Contract.TOPIC_ID}],
+        MsgType.CREATE_CHAT_ROOM: [{Contract.DISPLAY_NAME, Contract.CATEGORY, Contract.SUMMARY, Contract.IS_OPEN}],
+        MsgType.GET_OLDER_TOPICS: [{Contract.ANCHOR_ID}, {Contract.ANCHOR_ID, Contract.CATEGORY}],
+        MsgType.GET_OLDER_GROUPS: [{Contract.ANCHOR_ID}, {Contract.ANCHOR_ID, Contract.CATEGORY}],
         MsgType.SEND_MSG: [{Contract.ROOM_ID, Contract.CONTENT, Contract.NONCE}],
         MsgType.GET_OLDER_MESSAGES: [{Contract.ROOM_ID, Contract.ANCHOR_ID}],
     }
@@ -195,9 +225,33 @@ class MsgStructures:
             if k not in MsgStructures.SENSITIVE_FIELDS
         }
 
+
+class MessageProtocol:
+    def __init__(self):
+        self.cipher = None
+
+    def set_session_key(self, key: bytes):
+        self.cipher = Fernet(key)
+
+    def pack(self, data_dict):
+        json_data = json.dumps(data_dict).encode('utf-8')
+        if self.cipher:
+            json_data = self.cipher.encrypt(json_data)
+        header = len(json_data).to_bytes(4, 'big')
+        return header + json_data
+
+    def unpack(self, raw_data):
+        try:
+            if self.cipher:
+                raw_data = self.cipher.decrypt(raw_data)
+            return json.loads(raw_data.decode('utf-8'))
+        except Exception as e:
+            print(f"[Protocol Error] Failed to unpack message: {e}")
+            raise e
+
 class ResponseFactory:
     @staticmethod
-    def create(msg_type: MsgType, code: MsgCodes, raw_data: dict = {}):
+    def create(msg_type: MsgType, code: MsgCodes= MsgCodes.SUCCESS, raw_data: dict = {}):
         raw_data = raw_data or {}
 
         status = Contract.SUCCESS if 200 <= code < 300 else Contract.FAILED
@@ -212,7 +266,7 @@ class ResponseFactory:
             Contract.DATA: payload,
         }
     @staticmethod
-    def error(msg_type: MsgType=MsgType.ERROR, code: MsgCodes=MsgCodes.SERVER_ERROR, raw_data: dict = None):
+    def error(msg_type: MsgType=MsgType.ERROR, code: MsgCodes=MsgCodes.INTERNAL_SERVER_ERROR, raw_data: dict = None):
         return ResponseFactory.create(msg_type, code, raw_data)
 
 class Validator:

@@ -2,6 +2,14 @@ from enum import StrEnum, IntEnum, auto
 import time
 import re
 
+
+class RoomEvent(IntEnum):
+    USER_JOINED = 1
+    USER_LEFT = 2
+    USER_RECONNECTED = 3
+    TOPIC_CHANGED = 4
+    ROOM_CLOSED = 5
+
 class AppScreens(StrEnum):
     AUTH = 'auth'
     CHAT = 'chat'
@@ -12,6 +20,7 @@ class StateKey(StrEnum):
     DISPLAY_NAME = "display_name"
     CODE = "code"
     PUBLIC_ID = "public_id"
+    HANDSHAKE_ESTABLISHED = "handshake_established"
     LAST_MSG_TYPE = "last_msg_type"
     LAST_PAYLOAD = "last_payload"
     TOKEN = "session_token"
@@ -22,15 +31,18 @@ class StateKey(StrEnum):
     LOGGED_IN = "logged_in"
     IDENTITY = "identity"
     IS_ACTIVE = "is_active"
+    IS_ADMIN = "is_admin"
     FREEZE_SCREEN = "freeze_screen"
     SHOW_USER_INFO = "show_user_info"
     CURRENT_ROOM_ID = "current_room_id"
     SYNC_ROOMS = 'sync_rooms'
     SYNC_TOPICS = 'sync_topics'
+    SYNC_GROUPS = 'sync_groups'
     SYNC_MESSAGES = 'sync_messages'
     TOPICS_UI_SIGNAL = 'topics_ui_signal'
     ROOMS_UI_SIGNAL = 'rooms_ui_signal'
     MESSAGES_UI_SIGNAL = 'messages_ui_signal'
+    GROUPS_UI_SIGNAL = 'groups_ui_signal'
     SUGGESTED_TOPIC = 'suggested_topic'
     SUGGESTED_TOPIC_ID = 'suggested_topic_id'
     RELEASE_BTNS = 'release_btn'
@@ -51,6 +63,9 @@ class RequestFactory:
         }
 
 class MsgType(StrEnum):
+
+    KEY_EXCHANGE = 'key_exchange'
+
     LOGIN = "login"
     SIGNUP = "signup"
     VERIFY_OTP = "verify_otp"
@@ -69,6 +84,9 @@ class MsgType(StrEnum):
 
     GET_OLDER_MESSAGES = 'get_older_messages'
     GET_OLDER_TOPICS = 'get_older_topics'
+    GET_OLDER_GROUPS = 'get_older_groups'
+
+    AUTH_UPLOAD = 'auth_upload'
 
 class ResponseUtils:
     @staticmethod
@@ -91,10 +109,19 @@ class UIColors:
     TEXT_MAIN = "#FFFFFF"
     TEXT_MUTED = "#808080"
 
+
+from enum import IntEnum
+
+
 class MsgCodes(IntEnum):
-    # --- מידע ותשתית (1xx) ---
+    # --- מידע ותשתית כללית (10x) ---
     CONNECTION_ESTABLISHED = 100
-    CONNECTION_LOST = 101
+    CONNECTION_LOST = 102
+
+    # --- תשתית הצפנה ולחיצת יד (11x) ---
+    RSA_KEY = 110
+    SESSION_KEY = 111
+    HANDSHAKE_ESTABLISHED = 112
 
     # --- הצלחות (2xx) ---
     SUCCESS = 200
@@ -105,26 +132,28 @@ class MsgCodes(IntEnum):
     PASSWORD_RESET_SUCCESS = 205
     PENDING = 207
 
+    # --- שגיאות לקוח (4xx) ---
     INVALID_FIELDS = 400
-    UNAUTHORIZED = 401
+    SESSION_EXPIRED = 401
     ACCESS_DENIED = 403
     NOT_FOUND = 404
-    ROOM_NOT_FOUND = 460
-    SESSION_EXPIRED = 419
     CONFLICT = 409
     BLOCKED_EMAIL = 410
     FLOOD_WARNING = 429
-
     INVALID_OTP = 444
     TOO_MANY_ATTEMPTS = 445
+    ROOM_NOT_FOUND = 460
 
-
+    # --- שגיאות שרת (5xx) ---
     INTERNAL_SERVER_ERROR = 500
     DATABASE_ERROR = 501
     SERVICE_UNAVAILABLE = 503
 
-
 class Contract(StrEnum):
+
+    PUBLIC_KEY = 'public_key'
+
+
     TYPE = 'type'
     TIMESTAMP = 'timestamp'
     DATA = 'payload'
@@ -144,7 +173,8 @@ class Contract(StrEnum):
     DISPLAY_NAME = 'display_name'
     MSGS= 'messages'
     ANCHOR_ID = 'anchor_id'
-
+    ITEMS = 'items'
+    IS_ADMIN ='is_admin'
     OTP_CODE = "otp_code"
     ATTEMPTS = 'attempts'
 

@@ -7,7 +7,8 @@ class ChatUIKey(StrEnum):
     ROOM_CREATION_TYPE = "room_creation_type"
     HAS_INVITE_CODE_INPUT = "has_invite_code_input"
     HAS_AUTO_MATCH = "has_auto_match"
-    ROOMS_FETCH_STRATEGY = "rooms_fetch_strategy"
+    ROOMS_FETCH_STRATEGY = "rooms_fetch_strategy",
+    CAN_JOIN_ROOM = 'can_join_room'
 
 
 class FetchStrategy(StrEnum):
@@ -20,6 +21,7 @@ CHAT_ROLES_CONFIG = {
     UserRole.STANDARD: {
         ChatUIKey.DASHBOARD_TITLE: "לובי שיחות ציבורי",
         ChatUIKey.CAN_CREATE_ROOM: True,
+        ChatUIKey.CAN_JOIN_ROOM: True,
         ChatUIKey.ROOM_CREATION_TYPE: "standard",
         ChatUIKey.HAS_INVITE_CODE_INPUT: True,
         ChatUIKey.HAS_AUTO_MATCH: True,
@@ -29,6 +31,7 @@ CHAT_ROLES_CONFIG = {
     UserRole.STUDENT: {
         ChatUIKey.DASHBOARD_TITLE: "מרחב למידה - תלמיד",
         ChatUIKey.CAN_CREATE_ROOM: False,
+        ChatUIKey.CAN_JOIN_ROOM: True,
         ChatUIKey.ROOM_CREATION_TYPE: None,
         ChatUIKey.HAS_INVITE_CODE_INPUT: True,
         ChatUIKey.HAS_AUTO_MATCH: False,
@@ -38,6 +41,7 @@ CHAT_ROLES_CONFIG = {
     UserRole.TEACHER: {
         ChatUIKey.DASHBOARD_TITLE: "ניהול כיתות ומרחבי למידה",
         ChatUIKey.CAN_CREATE_ROOM: True,
+        ChatUIKey.CAN_JOIN_ROOM: False,
         ChatUIKey.ROOM_CREATION_TYPE: "education",
         ChatUIKey.HAS_INVITE_CODE_INPUT: False,
         ChatUIKey.HAS_AUTO_MATCH: False,

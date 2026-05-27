@@ -5,6 +5,9 @@ import select
 import bcrypt
 
 import os
+
+from Crypto.PublicKey import RSA
+
 from AIHandler import AIHandler
 import hashlib
 import DATABASE
@@ -15,12 +18,20 @@ import time
 import threading
 import traceback
 
+from cryptography.hazmat.primitives.asymmetric import rsa, padding
+from cryptography.hazmat.primitives import serialization, hashes
 
 class Server:
     def __init__(self):
         self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.HOST= '0.0.0.0'
         self.PORT= 8820
+
+        self.private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        self.public_key_pem = self.private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo
+        ).decode('utf-8')
 
         self.server.bind((self.HOST, self.PORT))
         self.server.listen()
@@ -29,7 +40,7 @@ class Server:
         self.db= DATABASE.Database()
         self.email_service = EmailService("Netzach.GUETA@gmail.com", "euhizienenibsako")
 
-        self.ai_handler = AIHandler(api_key="AIzaSyBjGP_jGnfQu7AUvkGWavGtS6xCNg0fsMw", db= self.db)
+        self.ai_handler = AIHandler(api_key="AIzaSyBUTtCftupCqtOV_WAnTvkY-iRWj8pDfSw", db= self.db)
         self.stop_ai_thread = threading.Event()
 
         #self.start_ai_service()
@@ -51,21 +62,48 @@ class Server:
             MsgType.VERIFY_OTP: self.auth_handler.verify_email,
             MsgType.RESEND_OTP: self.auth_handler.process_resend_otp,
             MsgType.RECONNECT: self.auth_handler.reconnect,
+            MsgType.AUTH_UPLOAD: self.auth_handler.process_bulk_upload,
             MsgType.SEND_MSG: self.chat_manager.process_new_message,
             MsgType.JOIN_ROOM: self.chat_manager.add_user_to_room,
             MsgType.CREATE_CHAT_ROOM: self.chat_manager.create_new_room,
             MsgType.GET_OLDER_TOPICS: self.chat_manager.handle_older_topics,
             MsgType.GET_OLDER_MESSAGES: self.chat_manager.handle_older_messages,
+            MsgType.GET_OLDER_GROUPS: self.chat_manager.handle_older_groups,
 
         }
         self.setup_handlers()
+
+        self.logic_queue = queue.Queue()
+        self.num_workers = 4
+        self.workers = []
+
+        for i in range(self.num_workers):
+            t = threading.Thread(target=self._logic_worker_loop, daemon=True, name=f"Worker-{i + 1}")
+            t.start()
+            self.workers.append(t)
+
+    def _logic_worker_loop(self):
+        while True:
+            try:
+                client, data_bytes = self.logic_queue.get()
+
+                if client.pending_disconnect:
+                    self.logic_queue.task_done()
+                    continue
+
+                self.msg_dispatcher.handle(client, data_bytes)
+
+                self.logic_queue.task_done()
+
+            except Exception as e:
+                print(f"[{threading.current_thread().name}] Critical error in logic loop: {e}")
 
     def setup_handlers(self):
         for k, v in self._handlers.items():
             self.msg_dispatcher.register(k, v)
 
     def start_ai_service(self):
-        t = threading.Thread(target=self._background_update_loop, daemon=True)
+        t = threading.Thread(target=self._background_update_loop, daemon=True, name="AI-Update-Thread")
         t.start()
 
     def _background_update_loop(self):
@@ -74,17 +112,16 @@ class Server:
         while not self.stop_ai_thread.is_set():
             try:
                 success = self.ai_handler.update_all_topics()
-
                 if success:
                     print("[Server] Global update successful.")
                 else:
                     print("[Server] Global update failed, will retry.")
-
             except Exception as e:
                 print(f"[Server] Critical error in AI Thread: {e}")
 
-            stopped = self.stop_ai_thread.wait(timeout=60*60*5)
+            stopped = self.stop_ai_thread.wait(timeout=60 * 60 * 5)
             if stopped:
+                print("[Server] AI Thread received stop signal, shutting down.")
                 return
 
     def run(self):
@@ -103,23 +140,38 @@ class Server:
                     self.read_from_client(sock)
 
             for sock in w_list:
-                client = self.clients[sock]
-                self.write_to_client(sock, client)
+                client = self.clients.get(sock)
+                if client:
+                    self.write_to_client(sock, client)
 
     def new_connection(self):
         try:
             client_socket, addr = self.server.accept()
             ip = addr[0]
             client_socket.setblocking(False)
+
+            # יצירת אובייקט הלקוח - הקונסטרקטור שלו מאתחל אוטומטית מופע פרטי של MessageProtocol
             client = Client(client_socket, addr)
             self.clients[client_socket] = client
 
-            error_code, freeze_time = self.traffic_monitor.process_new_connection(ip)
+            # 1. בניית הודעת ה-RSA הראשונית (שליחת המפתח הציבורי של השרת ללקוח)
+            rsa_msg = ResponseFactory.create(
+                msg_type=MsgType.KEY_EXCHANGE,
+                code=MsgCodes.RSA_KEY,
+                raw_data={Contract.PUBLIC_KEY: self.public_key_pem}
+            )
 
+            # 2. דחיפת המילון ישירות לתור השליחה.
+            # write_to_client ימשוך אותו ויפעיל אוטומטית את client.protocol.pack() שיטפל ב-JSON וב-Header
+            self.send_to_client(client_socket, rsa_msg)
+
+            # 3. בדיקות והגנות אבטחה של שכבת התעבורה מול ה-TrafficMonitor
+            error_code, freeze_time = self.traffic_monitor.process_new_connection(ip)
             if error_code:
-                is_silent = (error_code=='SILENT_DROP')
+                is_silent = (error_code == 'SILENT_DROP')
                 if is_silent:
                     self.handle_disconnect(client_socket)
+                    return
                 self.handle_penalty(client, error_code, freeze_time)
                 print(f"[Security] Notified and banning {ip} for {freeze_time}s")
                 return
@@ -135,55 +187,74 @@ class Server:
             return
 
         try:
-            chunk= sock.recv(1024)
-
+            chunk = sock.recv(1024)
             if not chunk:
                 self.handle_disconnect(sock)
+                return
 
-            else:
-                client.incoming_buffer += chunk
-                available_data= True
+            client.incoming_buffer += chunk
 
-                while available_data:
-                    if client.expected_len==0:
+            while True:
+                if client.expected_len == 0:
+                    if len(client.incoming_buffer) < 4:
+                        return
+                    client.expected_len = int.from_bytes(client.incoming_buffer[:4], 'big')
+                    client.incoming_buffer = client.incoming_buffer[4:]
 
-                        if len(client.incoming_buffer)>= 4:
-                            client.expected_len= int.from_bytes(client.incoming_buffer[:4], 'big')
-                            client.incoming_buffer= client.incoming_buffer[4:]
+                    if client.expected_len > MAX_MSG_SIZE:
+                        self.handle_disconnect(sock, "Message too large")
+                        return
 
-                            if client.expected_len > MAX_MSG_SIZE:
-                                print(f"[!] Warning: Client {client.addr} sent huge length: {client.expected_len}")
-                                self.handle_disconnect(sock, "Message too large")
-                                return
+                if len(client.incoming_buffer) < client.expected_len:
+                    return
 
+                raw_bytes = client.incoming_buffer[:client.expected_len]
+                client.incoming_buffer = client.incoming_buffer[client.expected_len:]
+                client.expected_len = 0
 
-                        else:
-                            available_data=False
-                            continue
+                try:
+                    data_json = client.protocol.unpack(raw_bytes)
 
-                    if len(client.incoming_buffer)>= client.expected_len:
-                        ip = client.addr[0]
-                        action, freeze = self.traffic_monitor.process_new_message(ip)
+                    # 1. בודקים גם את הסוג (KEY_EXCHANGE) וגם את הקוד (SESSION_KEY)
+                    if data_json.get(Contract.TYPE) == MsgType.KEY_EXCHANGE and data_json.get(
+                            Contract.CODE) == MsgCodes.SESSION_KEY:
 
-                        if action:
-                            client.incoming_buffer = client.incoming_buffer[client.expected_len:]
-                            client.expected_len = 0
-                            self.handle_penalty(client, action, freeze)
+                        # 2. הנתונים נמצאים כעת בתוך מפתח DATA
+                        payload = data_json.get(Contract.DATA, {})
+                        encrypted_key = bytes.fromhex(payload.get("encrypted_key"))
+
+                        session_key = self.private_key.decrypt(
+                            encrypted_key,
+                            padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                                         algorithm=hashes.SHA256(), label=None)
+                        )
+
+                        client.protocol.set_session_key(session_key)
+                        print(f"[Security] Secure session established for {client.addr}")
+
+                        # 3. בניית הודעת האישור עם סוג הודעה מפורש של KEY_EXCHANGE והקוד המתאים
+                        handshake_ok = ResponseFactory.create(
+                            msg_type=MsgType.KEY_EXCHANGE,
+                            code=MsgCodes.SUCCESS
+                        )
+                        self.send_to_client(sock, handshake_ok)
+
+                    else:
+                        # אם זה לא ה-Handshake, חייבים לוודא שהערוץ כבר מוצפן!
+                        if not client.protocol.cipher:
+                            self.handle_disconnect(sock, "Unauthorized: Handshake required")
                             return
 
-                        data_bytes= client.incoming_buffer[:client.expected_len]
-                        client.incoming_buffer = client.incoming_buffer[client.expected_len:]
-                        client.expected_len = 0
+                        # העברה ל-Dispatcher (כמילון פייתון נקי לחלוטין)
+                        self.handle_client(sock, data_json)
 
-
-                        try:
-                            self.handle_client(sock, data_bytes)
-
-                        except Exception as e:
-                            print('Invalid data from:', client.addr, e)
+                except Exception as e:
+                    print(f"[Security] Processing error from {client.addr}: {e}")
+                    self.handle_disconnect(sock, "Decryption/Protocol error")
+                    return
 
         except Exception as e:
-            self.handle_disconnect(sock,e)
+            self.handle_disconnect(sock, e)
 
     def handle_penalty(self, client, action, freeze):
 
@@ -195,10 +266,10 @@ class Server:
 
         return True
 
-    def handle_client(self, sock, data_bytes):
+    def handle_client(self, sock, data_json):
         client = self.clients.get(sock)
         if client:
-            self.msg_dispatcher.handle(client, data_bytes)
+            self.logic_queue.put((client, data_json))
 
     def write_to_client(self, sock,client):
 
@@ -209,8 +280,8 @@ class Server:
 
             elif not client.send_queue.empty():
                     data = client.send_queue.get()
-                    bytes_data = json.dumps(data).encode('utf-8')
-                    full_msg= len(bytes_data).to_bytes(4, 'big') +  bytes_data
+
+                    full_msg = client.protocol.pack(data)
 
                     sent= sock.send(full_msg)
                     client.outgoing_buffer = full_msg[sent:]
@@ -252,14 +323,12 @@ class Server:
         self.online_users[p_id] = sock
         print(f"[Routing] User {p_id} registered.")
         client = self.clients.get(sock)
-        if client:
-            rooms_data = self.chat_manager.get_initial_rooms_payload(client)
 
-            topics_data = self.ai_handler.get_topics_for_role(client.role)
+        if client:
+            rooms_payload = self.chat_manager.get_initial_rooms_payload(client)
 
             sync_payload = {
-                Contract.ROOMS: rooms_data,
-                Contract.TOPICS: topics_data
+                Contract.ROOMS: rooms_payload
             }
 
             sync_msg = ResponseFactory.create(
@@ -268,139 +337,255 @@ class Server:
                 raw_data=sync_payload
             )
 
-            # 5. שליחה סופית ללקוח
+            # 4. שליחה סופית של המידע המינימלי והנחוץ ללקוח לצורך רינדור מסך הבית/קבוצות
             self.send_to_client(client.sock, sync_msg)
 
-
-
     def close(self):
-        self.db.cursor.close()
-        self.db.conn.commit()
-        self.db.conn.close()
+        print("\n[Server] Initiating graceful shutdown...")
 
-class TrafficMonitor:
-    def __init__(self, penalty_threshold=5):
-        self._states = {}
-        self._email_states = {}
-        self.PENALTY_THRESHOLD = penalty_threshold
+        self.stop_ai_thread.set()
+        print("[Server] Signaled AI thread to stop.")
 
-    def _get_or_create_state(self, ip):
-        if ip not in self._states:
-            self._states[ip] = SecurityState()
-        return self._states[ip]
+        pending_tasks = self.logic_queue.qsize()
+        if pending_tasks > 0:
+            print(f"[Server] Waiting for {pending_tasks} pending tasks to complete...")
 
-    def process_new_connection(self, ip):
-        state = self._get_or_create_state(ip)
-        now = time.time()
+        self.logic_queue.join()
+        print("[Server] All logic tasks completed successfully.")
 
+        try:
+            self.db.cursor.close()
+            self.db.conn.commit()
+            self.db.conn.close()
+            print("[Server] Database connection closed safely.")
+        except Exception as e:
+            print(f"[Server] Error closing database: {e}")
 
-        if now < state.cooldown_until:
-            state.violation_count += 1
+        try:
+            self.server.close()
+            print("[Server] Main socket closed.")
+        except:
+            pass
 
-            if state.violation_count > 10:
-                return 'SILENT_DROP', 0
-
-            remaining = int(state.cooldown_until - now)
-            return state.last_error_code, max(0, remaining)
-
-        return None, 0
-
-
-    def process_new_message(self, ip):
-        state = self._get_or_create_state(ip)
-        now = time.time()
-
-        if now < state.cooldown_until:
-            return MsgCodes.ACCESS_DENIED, 600
-
-        time_passed = now - max(state.last_msg_sent_at, state.cooldown_until)
-        state.last_msg_sent_at = now
-
-        if time_passed > 30:
-            state.violation_count = 0
-            state.last_error_code = None
-            return None, 0
-
-        if time_passed < 0.02:
-            penalty = 6
-        elif time_passed < 0.5:
-            penalty = 1
-        else:
-            state.violation_count = max(0, state.violation_count - 2)
-            penalty = 0
-
-        state.violation_count += penalty
-
-        if state.violation_count >= 6:
-            state.last_error_code = MsgCodes.ACCESS_DENIED
-            state.cooldown_until = now + 600
-            return MsgCodes.ACCESS_DENIED, 600
-
-        elif state.violation_count >= 1:
-            state.last_error_code = MsgCodes.FLOOD_WARNING
-            freeze_duration = int(state.violation_count * 5)
-            state.cooldown_until = now + freeze_duration
-            return MsgCodes.FLOOD_WARNING, freeze_duration
-
-        return None, 0
-
-    def check_flood_and_spam(self, ip, current_hash):
-        state = self._get_or_create_state(ip)
-        now = time.time()
-
-        if current_hash == state.last_msg_hash:
-            state.dupe_count += 1
-            if state.dupe_count >= 10:
-                state.cooldown_until = now + 60
-                state.last_error_code= MsgCodes.FLOOD_WARNING
-                return MsgCodes.FLOOD_WARNING, 60
-        else:
-            state.last_msg_hash = current_hash
-            state.dupe_count = 1
-
-        if now > state.window_end:
-            state.msg_count = 0
-            state.window_end = now + 60
-
-        state.msg_count += 1
-        if state.msg_count > 20:
-            state.cooldown_until = now + 10
-            state.last_error_code= MsgCodes.FLOOD_WARNING
-            return MsgCodes.FLOOD_WARNING, 10
-
-        return None, 0
-
-    def report_email_request(self, email):
-        now = time.time()
-        if email not in self._email_states:
-            self._email_states[email] = {'attempts': 0, 'cooldown': 0}
-            return None
-        status = self._email_states[email]
-
-        # 3. כאן ה-Remaining Lock יעבוד, כי הערך באמת קיים ב-email_states
-        if now < status['cooldown']:
-            return int(status['cooldown'] - now)
-
-        status['attempts'] += 1
-
-        if status['attempts'] > 3:
-            status['cooldown'] = now + 300
-            status['attempts'] = 0
-            self._email_states[email] = status
-            return 300
-        self._email_states[email] = status
-        return None
 
 class SecurityState:
     def __init__(self):
-        self.cooldown_until = 0    # Timestamp של מתי החסימה נגמרת
-        self.violation_count = 0   # מונה: כמה הודעות הוא שלח בזמן שהיה חסום
+        # מנעול ייעודי להגנה על המצב הלוגי של כתובת ה-IP הזו
+        self.lock = threading.Lock()
+
+        # ניהול זיכרון ופעילות
+        self.last_activity = time.time()
+
+        # חסימות רשת קשיחות (TCP / פרוטוקול)
+        self.cooldown_until = 0
+        self.violation_count = 0
+        self.warnings_ignored = 0
         self.last_error_code = None
+
+        # השתקות ספאם והצפות תוכן (אפליקציה / צ'אט)
+        self.spam_cooldown_until = 0
         self.msg_count = 0
         self.dupe_count = 0
         self.window_end = 0
         self.last_msg_hash = None
         self.last_msg_sent_at = 0
+
+
+class TrafficMonitor:
+    def __init__(self, penalty_threshold=5):
+        self._states = {}
+        self._email_states = {}
+
+        # מנעול גלובלי להגנה על המילונים המשותפים
+        self.monitor_lock = threading.Lock()
+
+        self.PENALTY_THRESHOLD = penalty_threshold
+        self.MAX_IGNORED_WARNINGS = 3
+
+        # הגדרות ניקוי זיכרון (Garbage Collection)
+        self.cleanup_interval = 600  # ריצה כל 10 דקות
+        self.state_ttl = 3600  # תפוגה לאחר שעה של חוסר פעילות
+
+        # הפעלת תהליכון רקע שקט לניקוי זיכרון
+        self._cleanup_thread = threading.Thread(
+            target=self._cleanup_loop,
+            daemon=True,
+            name="TrafficMonitor-Cleanup"
+        )
+        self._cleanup_thread.start()
+
+    def _cleanup_loop(self):
+        """תהליכון רקע המנקה כתובות IP ואימיילים ישנים למניעת זליגת זיכרון"""
+        while True:
+            time.sleep(self.cleanup_interval)
+            now = time.time()
+
+            with self.monitor_lock:
+                ips_to_remove = [
+                    ip for ip, state in self._states.items()
+                    if now - state.last_activity > self.state_ttl
+                ]
+                for ip in ips_to_remove:
+                    del self._states[ip]
+
+                emails_to_remove = [
+                    email for email, status in self._email_states.items()
+                    if now - status.get('last_activity', 0) > self.state_ttl
+                ]
+                for email in emails_to_remove:
+                    del self._email_states[email]
+
+            if ips_to_remove or emails_to_remove:
+                print(f"[Security] Cleanup: Removed {len(ips_to_remove)} IPs and {len(emails_to_remove)} Emails.")
+
+    def _get_or_create_state(self, ip):
+        with self.monitor_lock:
+            if ip not in self._states:
+                self._states[ip] = SecurityState()
+
+            # עדכון חותמת זמן לפעילות אחרונה
+            self._states[ip].last_activity = time.time()
+            return self._states[ip]
+
+    def process_new_message(self, ip, payload_size):
+        """הגנת שכבת הרשת (Socket/TCP) - מניעת הצפת פאקטות ו-DDoS"""
+        state = self._get_or_create_state(ip)
+
+        with state.lock:
+            now = time.time()
+
+            # בדיקה האם ה-IP נמצא תחת חסימת רשת קשיחה
+            if now < state.cooldown_until:
+                state.warnings_ignored += 1
+
+                # ניסיון מעקף או התעלמות אגרסיבית מובילים לניתוק מיידי מהסוקט
+                if state.warnings_ignored >= self.MAX_IGNORED_WARNINGS:
+                    state.last_error_code = MsgCodes.ACCESS_DENIED
+                    state.cooldown_until = now + 600  # אכיפת חסימה ל-10 דקות מלאות
+                    return MsgCodes.ACCESS_DENIED, 600, True  # True = פקודת ניתוק לשרת
+
+                remaining = int(state.cooldown_until - now)
+                return state.last_error_code, remaining, False
+
+            state.warnings_ignored = 0
+
+            # בדיקת חלון זמן לאיפוס מונה ההפרות של הרשת
+            time_passed = now - max(state.last_msg_sent_at, state.cooldown_until)
+            state.last_msg_sent_at = now
+
+            if time_passed > 30:
+                state.violation_count = 0
+                state.last_error_code = None
+                return None, 0, False
+
+            # קביעת קנסות לפי מהירות הגעת המידע וגודלו
+            size_multiplier = 1 + (payload_size // 1024)
+
+            if time_passed < 0.02:
+                penalty = 6 * size_multiplier
+            elif time_passed < 0.15:
+                penalty = 1 * size_multiplier
+            else:
+                state.violation_count = max(0, state.violation_count - 2)
+                penalty = 0
+
+            state.violation_count += penalty
+
+            # הגעה לרף חסימה קשיחה
+            if state.violation_count >= 6:
+                state.last_error_code = MsgCodes.ACCESS_DENIED
+                state.cooldown_until = now + 600
+                return MsgCodes.ACCESS_DENIED, 600, False
+
+            # הגעה לרף אזהרת רשת זמנית
+            elif state.violation_count >= 1:
+                state.last_error_code = MsgCodes.FLOOD_WARNING
+                freeze_duration = int(state.violation_count * 5)
+                state.cooldown_until = now + freeze_duration
+                return MsgCodes.FLOOD_WARNING, freeze_duration, False
+
+            return None, 0, False
+
+    def check_flood_and_spam(self, ip, current_hash):
+        """הגנת שכבת האפליקציה (Chat Logic) - מניעת הצפות טקסט, חפירות והודעות כפולות"""
+        state = self._get_or_create_state(ip)
+
+        with state.lock:
+            now = time.time()
+
+            # בדיקה האם המשתמש מושתק כרגע ברמת האפליקציה
+            if now < state.spam_cooldown_until:
+                remaining = int(state.spam_cooldown_until - now)
+                return MsgCodes.FLOOD_WARNING, remaining
+
+            # 1. מניעת שליחת הודעות זהות ברצף (Spam Bot / כפתור תקוע)
+            if current_hash == state.last_msg_hash:
+                state.dupe_count += 1
+                if state.dupe_count >= 10:
+                    state.spam_cooldown_until = now + 60  # השתקה לדקה אחת
+                    state.last_error_code = MsgCodes.FLOOD_WARNING
+                    return MsgCodes.FLOOD_WARNING, 60
+            else:
+                state.last_msg_hash = current_hash
+                state.dupe_count = 1
+
+            # 2. הגבלת כמות הודעות כללית בדקה (חלון זמן מתגלגל)
+            if now > state.window_end:
+                state.msg_count = 0
+                state.window_end = now + 60
+
+            state.msg_count += 1
+            if state.msg_count > 20:
+                state.spam_cooldown_until = now + 10  # השתקה זמנית ל-10 שניות
+                state.last_error_code = MsgCodes.FLOOD_WARNING
+                return MsgCodes.FLOOD_WARNING, 10
+
+            return None, 0
+
+    def report_email_request(self, email):
+        """ניהול והגבלת בקשות קוד אימות (OTP) לנמען דואר אלקטרוני"""
+        with self.monitor_lock:
+            now = time.time()
+            if email not in self._email_states:
+                self._email_states[email] = {'attempts': 1, 'cooldown': 0, 'last_activity': now}
+                return None
+
+            status = self._email_states[email]
+            status['last_activity'] = now  # עדכון שהאימייל בשימוש פעיל
+
+            if now < status['cooldown']:
+                return int(status['cooldown'] - now)
+
+            status['attempts'] += 1
+
+            # חסימת שליחת מיילים חוזרים לאחר 3 ניסיונות רצופים
+            if status['attempts'] > 3:
+                status['cooldown'] = now + 300  # חסימה ל-5 דקות
+                status['attempts'] = 0
+                return 300
+
+            return None
+
+    def process_new_connection(self, ip):
+        """ניהול שלבי לחיצת היד (Handshake) הראשוניים בחיבור ה-Socket"""
+        state = self._get_or_create_state(ip)
+
+        with state.lock:
+            now = time.time()
+
+            if now < state.cooldown_until:
+                state.violation_count += 1
+
+                # אם ה-IP מנסה לפתוח סוקטים מרובים בזמן חסימה - התעלמות מוחלטת
+                if state.violation_count > 10:
+                    return 'SILENT_DROP', 0
+
+                remaining = int(state.cooldown_until - now)
+                return state.last_error_code, max(0, remaining)
+
+            return None, 0
+
+
 
 class MsgDispatcher:
     def __init__(self, send_func, traffic_monitor):
@@ -408,9 +593,7 @@ class MsgDispatcher:
         self.traffic_monitor = traffic_monitor
         self._handlers={}
 
-    def handle(self, client, data_bytes):
-        data_str = data_bytes.decode('utf-8')
-        data_json = json.loads(data_str)
+    def handle(self, client, data_json):
         print(data_json)
 
         msg_type = data_json.get(Contract.TYPE)
@@ -456,23 +639,31 @@ class MsgDispatcher:
             traceback.print_exc()
             print("-" * 30)
             print(f"Logic Error: {e}")
-            self.send_func(client.sock, ResponseFactory.error(msg_type, MsgCodes.SERVER_ERROR))
+            self.send_func(client.sock, ResponseFactory.error(msg_type, MsgCodes.INTERNAL_SERVER_ERROR))
 
     def _check_policy(self, client, msg_type, payload):
         ip = client.addr[0]
 
         if payload is None:
-            payload= {}
-        payload_str = json.dumps(payload, sort_keys=True)
+            payload = {}
+
+        clean_payload = {
+            k: (v.strip() if isinstance(v, str) else v)
+            for k, v in payload.items()
+            if k not in (Contract.NONCE, Contract.TIMESTAMP)
+        }
+
+        payload_str = json.dumps(clean_payload, sort_keys=True)
         combined_content = f"{msg_type}:{payload_str}"
         current_hash = hashlib.md5(combined_content.encode()).hexdigest()
 
-        error_code, freeze_time=  self.traffic_monitor.check_flood_and_spam(ip, current_hash)
+        error_code, freeze_time = self.traffic_monitor.check_flood_and_spam(ip, current_hash)
         if error_code:
             return PolicyAction(
-            response=ResponseFactory.error(msg_type, error_code, {Contract.EXPIRY: freeze_time}),
-            stop_processing=True,
-            wait_time=freeze_time)
+                response=ResponseFactory.error(msg_type, error_code, {Contract.EXPIRY: freeze_time}),
+                stop_processing=True,
+                wait_time=freeze_time
+            )
 
         return PolicyAction()
 
@@ -484,9 +675,12 @@ class MsgDispatcher:
 class Client:
     __slots__ = ['sock', 'addr', 'authenticated', 'expected_len',
                  'incoming_buffer', 'outgoing_buffer', 'send_queue',
-                 'role', 'user_info', 'display_name', 'p_id', 'auth_bundle', 'db_id', 'background_tasks', 'pending_disconnect']
+                 'role', 'is_admin', 'user_info', 'display_name', 'p_id',
+                 'auth_bundle', 'db_id', 'background_tasks', 'pending_disconnect',
+                 'protocol'] # <-- הוספנו את protocol במקום cipher
 
     def __init__(self, sock, addr):
+        self.protocol = MessageProtocol() # אתחול הפרוטוקול ללקוח הספציפי
         self.sock = sock
         self.addr = addr
 
@@ -500,11 +694,14 @@ class Client:
         self.authenticated = False
         self.pending_disconnect=False
         self.role = None
+        self.is_admin = None
 
         self.user_info = {}
         self.display_name=None
         self.background_tasks=[]
         self.auth_bundle = None
+        self.db_id = None
+        self.p_id=None
 
     @property
     def role_config(self):
@@ -538,7 +735,9 @@ class AuthHandler:
             MsgType.LOGIN: self._finalize_login,
             MsgType.FORGOT_PASSWORD: self._finalize_login
         }
-
+    
+    
+    
     def process_sign_up(self, client, payload):
         role_label = payload.get(Contract.ROLE)
         identifier = payload.get(Contract.IDENTITY)
@@ -652,7 +851,7 @@ class AuthHandler:
 
 
         client.auth_bundle = None
-        return ResponseFactory.error(purpose, MsgCodes.SERVER_ERROR)
+        return ResponseFactory.error(purpose, MsgCodes.INTERNAL_SERVER_ERROR)
 
     def _finalize_signup(self, client):
         user_data = client.auth_bundle.get(Contract.DATA)
@@ -684,14 +883,14 @@ class AuthHandler:
 
         user_record = self.db.authenticate_user(identifier, password)
         if user_record:
-
+            if user_record[Contract.ROLE] != payload.get(Contract.ROLE):
+                return ResponseFactory.error(msg_type=MsgType.LOGIN, code=MsgCodes.INVALID_FIELDS)
             client.auth_bundle = {Contract.DATA: user_record}
             return self._finalize_login(client)
 
         return ResponseFactory.error(MsgType.LOGIN, MsgCodes.INVALID_FIELDS)
 
-    def process_forgot_password(self, client, data):
-        payload = data.get(Contract.DATA, {})
+    def process_forgot_password(self, client, payload):
         email = payload.get(Contract.EMAIL)
 
         if email:
@@ -741,7 +940,23 @@ class AuthHandler:
 
         self.on_auth_success_callback(p_id, client.sock)
 
+        print(user_record)
         return ResponseFactory.create(msg_type=msg_type, raw_data=user_record, code=MsgCodes.SUCCESS)
+
+    def process_bulk_upload(self, client, payload):
+        if client.role_config != UserRole.TEACHER and client.is_admin:
+            return ResponseFactory.error(MsgType.AUTH_UPLOAD, MsgCodes.NO_PERMISSION)
+
+        users_list = payload.get(Contract.ITEMS, [])
+        if not users_list:
+            return ResponseFactory.error(MsgType.AUTH_UPLOAD, MsgCodes.INVALID_FIELDS)
+
+        success = self.db.bulk_add_authorized_users(users_list)
+
+        if success:
+            return ResponseFactory.create(MsgType.AUTH_UPLOAD, MsgCodes.SUCCESS)
+        else:
+            return ResponseFactory.error(MsgType.AUTH_UPLOAD, MsgCodes.DATABASE_ERROR)
 
 
 server = Server()

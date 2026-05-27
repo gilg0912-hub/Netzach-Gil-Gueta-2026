@@ -1,51 +1,62 @@
 import customtkinter as ctk
-from ui_components import TopicCard, RequiredEntry
 import time
-import datetime
+import os
+import threading
+import tkinter.filedialog as filedialog
 
-from app_constants import StateKey, Contract, UserRole
+import pythoncom
+import win32com.client
 
+from ui_components import TopicCard, RequiredEntry
+from app_constants import StateKey, Contract, UserRole, MsgType
 
 class RoomProfileWindow(ctk.CTkToplevel):
     def __init__(self, parent, room_data):
         super().__init__(parent)
-        self.title("פרופיל חדר")
-        self.geometry("400x450")
-        self.resizable(False, False)
+        self.title("פרטי חדר")
+        self.geometry("400x550")
+        self.configure(fg_color="#0F172A")  # רקע כהה עמוק
         self.attributes("-topmost", True)
 
-        # Header Section
-        header_frame = ctk.CTkFrame(self, fg_color="transparent")
-        header_frame.pack(fill="x", padx=20, pady=(20, 10))
+        # כותרת עם אפקט זוהר
+        ctk.CTkLabel(self, text=room_data.display_name,
+                     font=("Heebo", 24, "bold"), text_color="#38BDF8").pack(pady=(30, 20))
 
-        ctk.CTkLabel(header_frame, text="📋", font=("Arial", 24)).pack(side="right")
-        ctk.CTkLabel(header_frame, text=f"פרטי חדר: {room_data.display_name}",
-                     font=("Heebo", 18, "bold"), text_color=("#0284c7", "#38bdf8")).pack(side="right", padx=10)
+        # מיכל הנתונים - עיצוב כרטיס עם מסגרת מודגשת
+        info_container = ctk.CTkFrame(self, fg_color="#1E293B", corner_radius=20, border_width=2,
+                                      border_color="#334155")
+        info_container.pack(fill="both", expand=True, padx=25, pady=(0, 30))
 
-        # Info Section
-        info_container = ctk.CTkFrame(self, corner_radius=10)
-        info_container.pack(fill="both", expand=True, padx=20, pady=10)
-
-        info_items = [
-            ("מזהה חדר:", room_data.room_id),
-            ("קטגוריה:", room_data.category),
-            ("קוד הזמנה:", room_data.invite_code),
-            ("סטטוס:", "🟢 פתוח" if room_data.is_open else "🔴 נעול"),
-            ("נוצר על ידי:", room_data.created_by),
-            ("תאריך יצירה:", time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(room_data.created_at)))
-        ]
-
-        for title, value in info_items:
+        # פונקציה פנימית ליצירת שורות מעוצבות (פתרון הנקודתיים)
+        def create_row(label, value, is_status=False):
             row = ctk.CTkFrame(info_container, fg_color="transparent")
-            row.pack(fill="x", padx=15, pady=8)
-            ctk.CTkLabel(row, text=str(value), font=("Heebo", 12)).pack(side="left")
-            ctk.CTkLabel(row, text=title, font=("Heebo", 12, "bold")).pack(side="right")
+            row.pack(fill="x", padx=20, pady=12)
 
-        # Footer
-        ctk.CTkButton(self, text="סגור", command=self.destroy, width=100).pack(pady=20)
+            ctk.CTkLabel(row, text=str(value), font=("Heebo", 14), text_color="white").pack(side="left")
+
+            if is_status:
+                canvas = ctk.CTkCanvas(row, width=12, height=12, bg="#1E293B", highlightthickness=0)
+                canvas.pack(side="right", padx=5)
+                color = "#22C55E" if room_data.is_open else "#EF4444"
+                canvas.create_oval(2, 2, 10, 10, fill=color, outline="")
+
+            ctk.CTkLabel(row, text=f" :{label}", font=("Heebo", 14, "bold"), text_color="#94A3B8").pack(side="right")
+
+
+        create_row("קטגוריה", room_data.category)
+        create_row("קוד הזמנה", room_data.invite_code)
+        create_row("סטטוס", "זמין" if room_data.is_open else "סגור", is_status=True)
+        create_row("נוצר על ידי", room_data.created_by)
+        create_row("תאריך", time.strftime('%d/%m/%Y', time.localtime(room_data.created_at)))
+        create_row('תיאור הקבוצה', room_data.summary)
+
+        # כפתור סגירה מעוצב
+        ctk.CTkButton(self, text="סגור חלון", command=self.destroy,
+                      width=200, height=45, corner_radius=12,
+                      fg_color="#38BDF8", text_color="#0F172A", font=("Heebo", 16, "bold")).pack(pady=(0, 20))
 
 class ChatRoom:
-    def __init__(self, room_id, category, total_participants, participants, display_name, invite_code, allowed_type, is_open, created_by=None, created_at=None):
+    def __init__(self, room_id, category, total_participants, participants, display_name, invite_code, allowed_type, is_open, summary=None, created_by=None, created_at=None, **kwargs):
         self.room_id = str(room_id)
         self.category = category
         self.allowed_type = allowed_type
@@ -56,6 +67,8 @@ class ChatRoom:
         self.created_at = created_at
         self.participants = participants
         self.total_participants = total_participants
+        self.summary = summary
+        print(self.summary, 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA')
 
         self.history_ended = False
 
@@ -73,8 +86,19 @@ class ChatRoom:
             created_at=data.get(Contract.CREATED_AT),
             display_name = data.get(Contract.DISPLAY_NAME),
             participants = data.get(Contract.PARTICIPANTS),
-            total_participants = data.get(Contract.TOTAL_PARTICIPANTS)
+            total_participants = data.get(Contract.TOTAL_PARTICIPANTS),
+            summary = data.get(Contract.SUMMARY)
         )
+
+class BaseScreen(ctk.CTkFrame):
+    def __init__(self, parent, **kwargs):
+        super().__init__(parent, **kwargs)
+
+    def on_show(self):
+        pass
+
+    def finalize_load(self):
+        pass
 
 class ScrollScreen(ctk.CTkScrollableFrame):
     def __init__(self, parent, gui_state,
@@ -177,6 +201,10 @@ class ChatArea(ScrollScreen):
         if not signal_data or not self.current_room:
             return
 
+        if signal_data.get("is_refresh"):
+            self.refresh_failed_messages_ui()
+            return
+
         if str(signal_data.get(Contract.ROOM_ID)) != str(self.current_room.room_id):
             return
 
@@ -193,24 +221,56 @@ class ChatArea(ScrollScreen):
                     return
             return
 
-        items = signal_data.get("items", [])
+        # חסימת אירועי רפאים בזמן עדכון הממשק
+        self._is_loading = True
+
+        items = signal_data.get(Contract.ITEMS, [])
         is_older = signal_data.get("is_older", False)
         end_of_data = signal_data.get("end_of_data", False)
-
-        if items:
-            if is_older:
-                self.load_historical_messages(items)
-            else:
-                for msg in items:
-                    self._create_message_bubble(msg, scroll_to_bottom=False)
-                self.after(30, self.scroll_to_bottom)
 
         if end_of_data:
             self.current_room.history_ended = True
 
-        if is_older or end_of_data or not items:
+        if not items:
             self.reset_loading_state()
+            return
 
+        if is_older:
+            is_initial_room_load = (len(self.msg_frames) == 0)
+
+            if is_initial_room_load:
+                self.load_historical_messages(items)
+
+                # 🟢 הכרחת עדכון גבולות מיידי לקנבס לפני הגלילה
+                self.update_idletasks()
+                self._parent_canvas.configure(scrollregion=self._parent_canvas.bbox("all"))
+
+                self.scroll_to_bottom()
+                self.after(100, self.reset_loading_state)
+            else:
+                anchor_msg = self.msg_frames[0]
+                self.load_historical_messages(items)
+
+                # 🟢 1. חישוב מחודש של הגדלים (גורם לווידג'טים "להיתפס" פיזית למקומם החדש)
+                self.update_idletasks()
+
+                # 🟢 2. שורת הקסם (התיקון הקריטי):
+                # אנו מעדכנים ידנית את ה-scrollregion. בלעדי זה, פקודת ה-yview מתבטלת!
+                self._parent_canvas.configure(scrollregion=self._parent_canvas.bbox("all"))
+
+                # 3. עכשיו כשהקנבס יודע בוודאות שהוא גדול יותר, הזזת ה-Scrollbar תעבוד
+                new_height = self._parent_canvas.bbox("all")[3]
+                if new_height:
+                    fraction = anchor_msg.winfo_y() / new_height
+                    safe_fraction = max(fraction, 0.05)
+                    self._parent_canvas.yview_moveto(safe_fraction)
+
+                self.after(100, self.reset_loading_state)
+        else:
+            for msg in items:
+                self._create_message_bubble(msg, scroll_to_bottom=False)
+            self.after(30, self.scroll_to_bottom)
+            self.after(100, self.reset_loading_state)
     def load_historical_messages(self, messages_list):
         for msg in reversed(messages_list):
             self._create_message_bubble(msg, scroll_to_bottom=False, insert_at_top=True)
@@ -289,13 +349,25 @@ class ChatArea(ScrollScreen):
     def scroll_to_bottom(self):
         self._parent_canvas.yview_moveto(1.0)
 
+    def refresh_failed_messages_ui(self):
+        all_messages = self.gui_state.get_state(StateKey.SYNC_MESSAGES) or {}
+        room_messages = all_messages.get(str(self.current_room.room_id), [])
+
+        failed_ids = {str(msg.get(Contract.MSG_ID)) for msg in room_messages if msg.get("status") == "failed"}
+
+        for frame in self.msg_frames:
+            if str(frame.msg_id) in failed_ids:
+                frame.configure(fg_color=('#f87171', '#991b1b'))
+                if hasattr(frame, 'time_label'):
+                    frame.time_label.configure(text="שגיאה ❌", text_color=('#7f1d1d', '#fca5a5'))
+
     def clear_chat_ui(self):
         for frame in self.msg_frames:
             frame.pack_forget()
             frame.destroy()
         self.msg_frames.clear()
 
-class ChatScreen(ctk.CTkFrame):
+class ChatScreen(BaseScreen):
     def __init__(self, parent, gui_state, chat_service):  # הוספנו את chat_service כדי לאפשר שליחה
         super().__init__(parent, fg_color='transparent', corner_radius=20)
 
@@ -402,14 +474,14 @@ class ChatHeader(ctk.CTkFrame):
                 return
 
     def _on_room_updated(self, signal_data):
-        if not signal_data or not signal_data.get("items"):
+        if not signal_data or not signal_data.get(Contract.ITEMS):
             return
 
         current_room_id = self.gui_state.get_state(StateKey.CURRENT_ROOM_ID)
         if not current_room_id:
             return
 
-        for room_obj in signal_data.get("items", []):
+        for room_obj in signal_data.get(Contract.ITEMS, []):
             if str(room_obj.room_id) == str(current_room_id):
                 self.current_room_obj = room_obj
                 self._update_labels(room_obj)
@@ -426,174 +498,7 @@ class ChatHeader(ctk.CTkFrame):
         status_color = ("#16a34a", "#22c55e") if is_open else ("#dc2626", "#ef4444")
         self.status_label.configure(text=status_text, text_color=status_color)
 
-class HotScreen(ctk.CTkFrame):
-    def __init__(self, parent, gui_state, chat_service, on_create_callback=None):
-        super().__init__(parent, fg_color="transparent")
-        self.gui_state = gui_state
-        self.chat_service = chat_service
-        self.controller = parent
-
-        self.all_topic_cards = []
-        self.all_topics_downloaded = False
-        self.is_waiting=False
-
-        self.grid_rowconfigure(0, weight=0)  # אזור פעולה עליון דינמי
-        self.grid_rowconfigure(1, weight=0)  # תפריט סינון קטגוריות
-        self.grid_rowconfigure(2, weight=0)  # קו הפרדה
-        self.grid_rowconfigure(3, weight=1)  # אזור נגלל
-        self.grid_columnconfigure(0, weight=1)
-
-
-        self.teacher_container = ctk.CTkFrame(self, fg_color="transparent")
-        self.create_blank_btn = ctk.CTkButton(
-            self.teacher_container,
-            text="צור קבוצה חדשה מאפס ➕",
-            font=("Heebo", 14, "bold"),
-            fg_color="#D4AF37",
-            hover_color="#B0903D",
-            text_color="black",
-            height=36,
-        )
-
-        if on_create_callback:
-            self.create_blank_btn.configure(command=on_create_callback)
-
-        self.create_blank_btn.pack(fill='x', padx=10)
-
-
-        self.invite_container = ctk.CTkFrame(self, fg_color="transparent")
-        self.invite_label = ctk.CTkLabel(
-            self.invite_container,
-            text=":הצטרפות לקבוצה סגורה באמצעות קוד",
-            font=("Heebo", 14, "bold"),
-            text_color="white"
-        )
-        self.invite_label.pack(side="right", padx=10)
-
-        self.code_entry = ctk.CTkEntry(
-            self.invite_container,
-            placeholder_text=":הזן קוד",
-            width=200,
-            font=("Heebo", 13),
-            height=32
-        )
-        self.code_entry.pack(side="right", padx=5)
-
-        self.join_code_btn = ctk.CTkButton(
-            self.invite_container,
-            text="הצטרף",
-            font=("Heebo", 13, "bold"),
-            fg_color="#f59e0b",
-            hover_color="#d97706",
-            text_color="white",
-            width=80,
-            height=32,
-            command=self.submit_invite_code
-        )
-        self.join_code_btn.pack(side="right", padx=5)
-
-        # ----------------------------------------------------
-        # 2. מילון מיפוי אסטרטגי (הרכיב שיוצג מול הרכיב שיוסתר)
-        # ----------------------------------------------------
-        self._role_view_mapping = {
-            UserRole.TEACHER: self.teacher_container,
-            UserRole.STANDARD: self.invite_container,
-            UserRole.STUDENT: self.invite_container,
-        }
-
-        # ----------------------------------------------------
-        # 3. בניית האלמנטים הקבועים ברשת (Rows 1, 2, 3)
-        # ----------------------------------------------------
-        self.filter_menu = ctk.CTkSegmentedButton(
-            self,
-            fg_color=("#E9EDF3", "#151C2B"),
-            selected_color=("#2F80ED", "#2F80ED"),
-            selected_hover_color=("#256FD1", "#256FD1"),
-            unselected_color=("#E9EDF3", "#151C2B"),
-            unselected_hover_color=("#DCEBFF", "#1F2A44"),
-            text_color=("#4B5563", "#D1D5DB"),
-            text_color_disabled=("#9CA3AF", "#6B7280"),
-            values=["הכל", "ביטחון", "מדיני", "חברה", "כלכלה", "חינוך"],
-            command=self.filter_topics
-        )
-        self.filter_menu.grid(row=1, column=0, sticky="ew", padx=20, pady=(5, 5))
-        self.filter_menu.set("הכל")
-
-        self.divider = ctk.CTkFrame(self, fg_color="#30363D", height=2)
-        self.divider.grid(row=2, column=0, sticky="ew", padx=25, pady=5)
-
-        self.scrollable_area = ScrollScreen(self, self.gui_state, on_bottom_reach=self.load_more_data, fg_color="transparent", corner_radius=0)
-        self.scrollable_area.grid(row=3, column=0, sticky="nsew", padx=10, pady=(5, 10))
-
-        self.gui_state.register(StateKey.ROLE, self.setup_view)
-        self.gui_state.register(StateKey.RELEASE_BTNS, self._release_btn)
-
-    def setup_view(self, role):
-        target_view = self._role_view_mapping.get(role)
-        if target_view:
-            target_view.grid(row=0, column=0, sticky="ew", padx=20, pady=(15, 10))
-
-    def _release_btn(self, new_state):
-        self.join_code_btn.configure(state= new_state)
-
-    def submit_invite_code(self):
-        if self.is_waiting:
-            return
-
-        code = self.code_entry.get().strip()
-
-        if not code:
-            return
-
-        self.code_entry.delete(0, 'end')
-
-        self.chat_service.join_room_by_code(code)
-
-    def add_topic_card(self, id=None, title=None, summary=None, url=None, category=None, on_top=False, **kwargs):
-        current_filter = self.filter_menu.get()
-        should_show = (current_filter == "הכל" or category == current_filter)
-
-        new_topic_card = TopicCard(self.scrollable_area, title=title, summary=summary, category=category, url=url,
-                                   id=id, join_callback=self.chat_service.join_room, **kwargs)
-
-        if on_top and self.all_topic_cards:
-            if should_show:
-                new_topic_card.pack(before=self.all_topic_cards[0], fill="x", padx=5, pady=5)
-            self.all_topic_cards.insert(0, new_topic_card)
-        else:
-            if should_show:
-                new_topic_card.pack(fill="x", padx=5, pady=5)
-            self.all_topic_cards.append(new_topic_card)
-
-    def filter_topics(self, selected_category):
-        for card in self.all_topic_cards:
-            card.pack_forget()
-
-        for card in self.all_topic_cards:
-            if selected_category == "הכל" or card.category == selected_category:
-                card.pack(pady=10, padx=10, fill="x")
-        self.scrollable_area._parent_canvas.yview_moveto(0.0)
-
-    def release_scroll_lock(self):
-        self.scrollable_area.reset_loading_state()
-
-    def load_more_data(self):
-        if self.all_topics_downloaded:
-            self.scrollable_area.reset_loading_state()
-            return
-
-        if self.all_topic_cards:
-            valid_ids = [card.id for card in self.all_topic_cards if card.id is not None]
-
-            if valid_ids:
-                oldest_id = min(valid_ids)
-                self.chat_service.fetch_older_topics(oldest_id)
-            else:
-                self.scrollable_area.reset_loading_state()
-        else:
-            self.scrollable_area.reset_loading_state()
-
-class CreateScreen(ctk.CTkFrame):
+class CreateScreen(BaseScreen):
     def __init__(self, parent, gui_state, chat_service):
         super().__init__(parent, fg_color="transparent")
 
@@ -707,8 +612,6 @@ class CreateScreen(ctk.CTkFrame):
         self.topic_dropdown.set(self.custom_option_text)
         self._on_topic_selection_changed(self.custom_option_text)
 
-
-
     def _on_topic_selection_changed(self, choice):
         # משחררים את הנעילה ומנקים שדות
         self.custom_topic_entry.configure(state="normal")
@@ -723,7 +626,6 @@ class CreateScreen(ctk.CTkFrame):
             self.custom_topic_entry.insert(0, choice)
 
             sync_topics = self.gui_state.get_state(StateKey.SYNC_TOPICS) or []
-
             ai_summary = next((t.get('summary', '') for t in sync_topics if t.get('title') == choice), "")
 
             self.summary_textbox.insert("1.0", ai_summary, "right_align")
@@ -732,7 +634,7 @@ class CreateScreen(ctk.CTkFrame):
         widget.configure(border_color=self.default_border)
 
         if self.error_label.cget("text"):
-            self.show_message("", "transparent")
+            self.show_message("", "red")
 
     def handle_create_room(self):
         validations = [
@@ -745,29 +647,24 @@ class CreateScreen(ctk.CTkFrame):
             return
 
         room_name = self.room_name_entry.get().strip()
-        topic_title = self.custom_topic_entry.get().strip()
-
+        topic = self.custom_topic_entry.get().strip()
         room_summary = self.summary_textbox.get("1.0", "end").strip()
         is_public = (self.privacy_toggle.get() == "ציבורי (פתוח לכולם)")
 
-        if not room_name or not topic_title:
-            return
-
-
         payload = {
-            Contract.CATEGORY: topic_title,
+            Contract.CATEGORY: topic,
             Contract.DISPLAY_NAME: room_name,
-            Contract.TYPE: "education",
-            Contract.IS_OPEN: is_public,
+            Contract.IS_OPEN: 0 if is_public else 1,
             Contract.SUMMARY: room_summary
         }
 
+        self.show_message("")
         self.chat_service.create_room(payload)
 
     def release_create_btn(self, state):
         self.create_btn.configure(state=state)
 
-    def show_message(self, text, color):
+    def show_message(self, text, color='gray14'):
         self.error_label.configure(text=text, text_color=color)
 
     def _clear_fields(self):
@@ -775,9 +672,363 @@ class CreateScreen(ctk.CTkFrame):
         self.topic_dropdown.set(self.custom_option_text)
         self._on_topic_selection_changed(self.custom_option_text)
 
+class DiscoveryBase(BaseScreen):
+    def __init__(self, parent, gui_state, chat_service, fetch_callback):
+        super().__init__(parent, fg_color="transparent")
+        self.gui_state = gui_state
+        self.chat_service = chat_service
+        self.fetch_callback = fetch_callback
+        self.all_cards = []
+        self.initial_load_done = False
+        self.categories = ["הכל", "ביטחון", "מדיני", "חברה", "כלכלה", "חינוך"]
+        self.end_of_data_map = {cat: False for cat in self.categories}
 
-# ==========================================
-# דוגמת שימוש והרצה במערכת (Main Application)
-# ==================
+        self.filter_menu = ctk.CTkSegmentedButton(self, values=self.categories, command=self.filter_cards)
+        self.filter_menu.grid(row=1, column=0, sticky="ew", padx=20, pady=(15, 5))
+        self.filter_menu.set("הכל")
+
+        self.scrollable_area = ScrollScreen(
+            self, self.gui_state, on_bottom_reach=self.load_more_data,
+            fg_color="transparent", corner_radius=0
+        )
+
+    def add_card(self, id=None, title=None, summary=None, url=None, category=None, on_top=False, **kwargs):
+
+        filter_val = self.filter_menu.get() if self.filter_menu else "הכל"
+        should_show = (filter_val == "הכל" or category == filter_val)
+
+        new_card = TopicCard(
+            self.scrollable_area, title=title, summary=summary,
+            category=category, url=url, id=id, **kwargs
+        )
+
+        if on_top and self.all_cards:
+            if should_show:
+                new_card.pack(before=self.all_cards[0], fill="x", padx=5, pady=5)
+            self.all_cards.insert(0, new_card)
+        else:
+            if should_show:
+                new_card.pack(fill="x", padx=5, pady=5)
+            self.all_cards.append(new_card)
+
+    def finalize_load(self):
+        if not self.initial_load_done:
+            self.initial_load_done = True
+        self.release_scroll_lock()
+
+    def filter_cards(self, selected_category):
+        for card in self.all_cards:
+            card.pack_forget()
+
+        self.release_scroll_lock()
+
+        cards_in_cat = [c for c in self.all_cards if selected_category == "הכל" or c.category == selected_category]
 
 
+        is_finished = self.end_of_data_map.get(selected_category, False)
+
+        is_loading = self.scrollable_area._is_loading
+
+        if not cards_in_cat and not is_finished and not is_loading:
+            self.load_more_data()
+
+        for card in cards_in_cat:
+            card.pack(pady=10, padx=10, fill="x")
+
+        self.scrollable_area._parent_canvas.yview_moveto(0.0)
+
+    def on_show(self):
+        if not self.initial_load_done and not self.scrollable_area._is_loading:
+            self.load_more_data()
+
+    def load_more_data(self):
+
+        current_filter = self.filter_menu.get() if self.filter_menu else "הכל"
+
+        if self.end_of_data_map.get(current_filter, False):
+            return
+
+        self.scrollable_area._is_loading = True
+
+        if current_filter == "הכל":
+            valid_ids = [card.id for card in self.all_cards if card.id is not None]
+        else:
+            valid_ids = [card.id for card in self.all_cards if card.id is not None and card.category == current_filter]
+
+        oldest_id = min(valid_ids) if valid_ids else None
+
+        category_to_fetch = None if current_filter == "הכל" else current_filter
+
+        if self.fetch_callback:
+            self.fetch_callback(oldest_id, category_to_fetch)
+
+    def release_scroll_lock(self):
+        self.scrollable_area.reset_loading_state()
+
+    def update_category_status(self, category, is_end):
+        if is_end:
+            if category is None or category == 'הכל':
+                for card in self.end_of_data_map:
+                    self.end_of_data_map[card] = True
+
+            elif category in self.end_of_data_map:
+                self.end_of_data_map[category] = is_end
+
+class JoinScreen(DiscoveryBase):
+    def __init__(self, parent, gui_state, chat_service):
+        super().__init__(parent, gui_state, chat_service, chat_service.fetch_older_groups)
+        self.is_waiting = False
+
+        self.grid_rowconfigure(3, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+
+        self.setup_ui()
+        self.gui_state.register(StateKey.RELEASE_BTNS, self._release_btn)
+        self.gui_state.register(StateKey.ROLE, self._update_role_view)
+
+    def setup_ui(self):
+        # 1. Action Bar (החלק העליון)
+        self.actions_container = ctk.CTkFrame(self, fg_color="transparent")
+        self.actions_container.grid(row=0, column=0, sticky="ew", padx=20, pady=(15, 10))
+
+        # הצטרפות עם קוד
+        self.code_frame = ctk.CTkFrame(self.actions_container, fg_color="transparent")
+        self.code_frame.pack(fill="x", pady=5)
+        ctk.CTkLabel(self.code_frame, text=":הצטרפות לקבוצה סגורה באמצעות קוד", font=("Heebo", 14, "bold"),
+                     text_color="white").pack(side="right", padx=10)
+        self.code_entry = ctk.CTkEntry(self.code_frame, placeholder_text=":הזן קוד", width=150, font=("Heebo", 13),
+                                       height=32)
+        self.code_entry.pack(side="right", padx=5)
+        self.join_code_btn = ctk.CTkButton(self.code_frame, text="הצטרף", font=("Heebo", 13, "bold"),
+                                           fg_color="#f59e0b", hover_color="#d97706", width=80, height=32,
+                                           command=self.submit_invite_code)
+        self.join_code_btn.pack(side="right", padx=5)
+
+        # הצטרפות אקראית
+        self.random_join_frame = ctk.CTkFrame(self.actions_container, fg_color="transparent")
+        ctk.CTkLabel(self.random_join_frame, text=":או קפוץ לדיון אקראי בנושא", font=("Heebo", 14, "bold"),
+                     text_color="white").pack(side="right", padx=10)
+        self.category_dropdown = ctk.CTkOptionMenu(self.random_join_frame, values=self.categories, font=("Heebo", 13),
+                                                   height=32)
+        self.category_dropdown.pack(side="right", padx=5)
+        self.random_join_btn = ctk.CTkButton(self.random_join_frame, text="הצטרף אקראית 🎲", font=("Heebo", 13, "bold"),
+                                             width=120, height=32, fg_color="#10b981", hover_color="#059669",
+                                             command=self.submit_random_join)
+        self.random_join_btn.pack(side="right", padx=5)
+
+        self.scrollable_area.grid(row=3, column=0, sticky="nsew", padx=10, pady=(5, 10))
+
+    def _update_role_view(self, role):
+        if role == UserRole.STANDARD:
+            self.random_join_frame.pack(fill="x", pady=(10, 0))
+        else:
+            self.random_join_frame.pack_forget()
+
+    def _release_btn(self, new_state):
+        self.join_code_btn.configure(state=new_state)
+        self.random_join_btn.configure(state=new_state)
+
+    def submit_invite_code(self):
+        code = self.code_entry.get().strip()
+        if code:
+            self.code_entry.delete(0, 'end')
+            self.chat_service.join_room(invite_code=code)
+
+    def submit_random_join(self):
+        category = self.category_dropdown.get()
+        payload = {Contract.CATEGORY: None if category == "הכל" else category}
+        self.chat_service.join_room(payload)
+
+class TopicTemplateScreen(DiscoveryBase):
+    def __init__(self, parent, gui_state, chat_service, on_create_callback=None):
+        super().__init__(parent, gui_state, chat_service,chat_service.fetch_older_topics)
+        self.on_create_callback = on_create_callback
+
+        self.grid_rowconfigure(3, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+
+        self.setup_ui()
+
+    def setup_ui(self):
+        self.actions_container = ctk.CTkFrame(self, fg_color="transparent")
+        self.actions_container.grid(row=0, column=0, sticky="ew", padx=20, pady=(15, 10))
+
+        self.create_btn = ctk.CTkButton(
+            self.actions_container,
+            text="צור קבוצה חדשה מאפס ➕",
+            font=("Heebo", 16, "bold"),
+            fg_color="#D4AF37",
+            hover_color="#B0903D",
+            text_color="black",
+            height=40,
+            command=self.on_create_callback if self.on_create_callback else lambda: None
+        )
+        self.create_btn.pack(fill='x', padx=10)
+
+        # 3. רשימת התבניות/חדרים (מגיעה מהבסיס)
+        self.scrollable_area.grid(row=3, column=0, sticky="nsew", padx=10, pady=(5, 10))
+
+class UserDetailsScreen(BaseScreen):
+    def __init__(self, parent, gui_state, chat_service):
+        super().__init__(parent,
+                         fg_color= ("#FFE5CC", "#0D1117"),
+                         bg_color='transparent',
+                         corner_radius=20,
+                         border_width=2,
+                         border_color='#B0903D',
+                         width=400,
+                         height=650)
+
+        self.gui_state = gui_state
+        self.chat_service = chat_service
+
+
+        self.pack_propagate(False)
+
+        self.info_container = ctk.CTkFrame(self, fg_color="transparent")
+        self.field_labels = {}
+
+        fields = [
+            ("שם תצוגה", StateKey.DISPLAY_NAME, "🆔"),
+            ("אמצעי זיהוי", StateKey.IDENTITY, "👤"),
+            ("סטטוס", StateKey.ROLE, "🛡"),
+            ("מפתח ציבורי", StateKey.PUBLIC_ID, "🔑"),
+            ("אימייל", StateKey.EMAIL, "📧"),
+            ('רמת ההרשאה', StateKey.IS_ADMIN, "👔"),
+        ]
+        self.gui_state.register(StateKey.LOGGED_IN, self.refresh_data)
+
+        self.upload_btn = ctk.CTkButton(self,
+                                        text="ניהול מורשים מתקדם (אקסל) 🛡️",
+                                        text_color="#0D1117",
+                                        fg_color='#B0903D',
+                                        hover_color="#C5A452",
+                                        font=("Heebo", 14, "bold"),
+                                        height=40,
+                                        command=self._import_users_via_win32)
+
+        self.action_btn = ctk.CTkButton(self,
+                                        text="התנתק מהמערכת",
+                                        text_color = "#B0903D",
+                                        fg_color='transparent',
+                                        hover_color="#C0392B",
+                                        border_width=2,
+                                        border_color='#B0903D',
+                                        cursor= 'hand2',
+                                        font=("Heebo", 14, "bold"),
+                                        height=40,
+                                        corner_radius=8)
+
+        self._build_header()
+
+        self.action_btn.pack(fill="x", padx=30, pady=10)
+
+        self.info_container.pack(fill="both", expand=True, padx=30, pady=(10, 10))
+
+        for label, key_name, icon in fields:
+            self._add_row(label, key_name, icon)
+
+    def _build_header(self):
+        avatar_frame = ctk.CTkFrame(self, fg_color="transparent")
+        avatar_frame.pack(pady=(15, 5))
+
+        self.avatar_size = (120, 120)
+
+        self.avatar_image_label = ctk.CTkFrame(
+            avatar_frame,
+            width=self.avatar_size[0],
+            height=self.avatar_size[1],
+            corner_radius=60,
+            border_width=2,
+            border_color='#B0903D',
+            fg_color= 'transparent'
+        )
+        self.avatar_image_label.pack()
+
+        icon_label = ctk.CTkLabel(self.avatar_image_label, text="👤", font=("Arial", 60), text_color = ("#0D1117", "#FFE5CC"))
+        icon_label.place(relx=0.5, rely=0.5, anchor="center")
+
+        self.title_label = ctk.CTkLabel(self,
+                                        text="פרופיל משתמש",
+                                        font=("Heebo", 30, "bold"),
+                                        text_color="#B0903D")
+        self.title_label.pack(pady=(0, 10))
+
+    def _add_row(self, label, key_name, icon):
+        row = ctk.CTkFrame(self.info_container, fg_color="transparent")
+        row.pack(fill="x", pady=5)
+
+        ctk.CTkLabel(row, text=f" :{label} {icon}", font=("Heebo", 20, "bold"),
+                     text_color='#B0903D').pack(anchor='e')
+
+        value_label = ctk.CTkLabel(row, text="", font=("Heebo", 18, 'bold'), text_color=('black', 'white'))
+        value_label.pack(anchor='w')
+
+        self.field_labels[key_name] = value_label
+
+        line = ctk.CTkFrame(self.info_container, fg_color="#B0903D", height=2)
+        line.pack(fill="x", pady=(2, 5))
+
+
+    def refresh_data(self, val=None):
+        if not val:
+            return
+        for key_name, label_widget in self.field_labels.items():
+            new_value = str(self.gui_state.get_state(key_name) or "לא זמין")
+            current_value = label_widget.cget("text")
+            if current_value != new_value:
+                label_widget.configure(text=new_value)
+
+        if self.gui_state.get_state(StateKey.IS_ADMIN) == 'בכיר':
+            self.upload_btn.pack(fill="x", padx=30, pady=(10, 0), before=self.action_btn)
+        else:
+            self.upload_btn.pack_forget()
+
+    def _import_users_via_win32(self):
+        file_path = filedialog.askopenfilename(
+            title="בחר קובץ אקסל של מורשים",
+            filetypes=[("Excel files", "*.xlsx *.xls")]
+        )
+        if not file_path:
+            return
+
+        def parse_excel():
+            pythoncom.CoInitialize()
+            try:
+                excel = win32com.client.Dispatch("Excel.Application")
+                excel.Visible = False
+
+                wb = excel.Workbooks.Open(os.path.abspath(file_path))
+                ws = wb.Sheets(1)
+
+                users_to_add = []
+                row = 2  
+
+                while ws.Cells(row, 1).Value is not None:
+                    identity = str(ws.Cells(row, 1).Value).strip()
+                    if identity.endswith('.0'): identity = identity[:-2]
+
+                    role = str(ws.Cells(row, 2).Value).strip()
+                    name = str(ws.Cells(row, 3).Value).strip()
+
+                    users_to_add.append({
+                        Contract.IDENTITY: identity,
+                        Contract.ROLE: role,
+                        Contract.FULL_NAME: name
+                    })
+                    row += 1
+
+                wb.Close(False)
+                excel.Quit()
+
+                if users_to_add:
+                    payload = {Contract.ITEMS: users_to_add}
+                    self.chat_service.dispatcher.send_msg(MsgType.AUTH_UPLOAD, payload)
+                    print(f"[Win32] Successfully parsed and sent {len(users_to_add)} users.")
+
+            except Exception as e:
+                print(f"[Win32 Error] Failed to parse Excel: {e}")
+            finally:
+                pythoncom.CoUninitialize()
+
+        threading.Thread(target=parse_excel, daemon=True).start()

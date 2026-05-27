@@ -1,6 +1,7 @@
 from gui_state_mgmt import *
 from abc import abstractmethod
 from chat_widgets import ChatRoom
+from app_constants import Contract, RoomEvent
 import random
 
 
@@ -22,10 +23,12 @@ class ChatService(BaseService):
         self.dispatcher.register(MsgType.SYNC_DATA, self.handle_sync_data)
         self.dispatcher.register(MsgType.JOIN_ROOM, self.handle_join_room_response)
         self.dispatcher.register(MsgType.GET_OLDER_MESSAGES, self.handle_older_messages_response)
-        self.dispatcher.register(MsgType.GET_OLDER_TOPICS, self.handle_older_topics)
+        self.dispatcher.register(MsgType.GET_OLDER_TOPICS, self.handle_older_topics),
+        self.dispatcher.register(MsgType.GET_OLDER_GROUPS, self.handle_older_groups)
         self.dispatcher.register(MsgType.CREATE_CHAT_ROOM, self.handle_new_room)
         self.dispatcher.register(MsgType.SEND_MSG, self.handle_send_msg_response)
         self.dispatcher.register(MsgType.RECEIVE_MSG, self.handle_receive_msg)
+        self.gui_state.register(StateKey.CONNECTED, self._on_connection_changed)
 
     def handle_sync_data(self, data, code):
         if code == MsgCodes.SUCCESS:
@@ -33,27 +36,8 @@ class ChatService(BaseService):
             if Contract.ROOMS in data:
                 self._update_rooms_list(data[Contract.ROOMS])
 
-            if Contract.TOPICS in data:
-                self._update_topics_list(data[Contract.TOPICS])
-
         else:
             print(f"[ChatService] Sync Data failed with code: {code}")
-    """
-                if Contract.MESSAGES in data:
-                    for msg in data[Contract.MESSAGES]:
-                        self._update_messages_list(
-                            room_id=msg.get(Contract.ROOM_ID),
-                            messages_to_add=[msg],
-                            is_older=False
-                        )
-
-    """
-
-    def join_room_by_code(self, room_code):
-        if not room_code:
-            return
-        payload = {Contract.INVITE_CODE: room_code}
-        self.dispatcher.send_msg(MsgType.JOIN_ROOM, payload)
 
     def join_room_by_category(self, category):
         if not category:
@@ -63,15 +47,17 @@ class ChatService(BaseService):
 
     def handle_receive_msg(self, data, code):
         if code == MsgCodes.SUCCESS:
+            room_id = data.get(Contract.ROOM_ID)
             self._update_messages_list(
-                room_id=data.get(Contract.ROOM_ID),
+                room_id=room_id,
                 messages_to_add=[data],
                 is_older=False
             )
+            self._update_rooms_list([{Contract.ROOM_ID: room_id}], at_top=True)
 
     def handle_older_messages_response(self, data, code):
         room_id = data.get(Contract.ROOM_ID)
-        messages = data.get('items', [])
+        messages = data.get(Contract.ITEMS, [])
         is_end = data.get('end_of_data', False)
 
         if code == MsgCodes.SUCCESS:
@@ -84,7 +70,7 @@ class ChatService(BaseService):
         else:
             self.gui_state.set_state(StateKey.MESSAGES_UI_SIGNAL, {
                 "room_id": room_id,
-                "items": [],
+                Contract.ITEMS: [],
                 "is_older": True,
                 "end_of_data": True
             })
@@ -128,7 +114,7 @@ class ChatService(BaseService):
 
         self.gui_state.set_state(StateKey.MESSAGES_UI_SIGNAL, {
             "room_id": room_id_str,
-            "items": new_items,
+            Contract.ITEMS: new_items,
             "is_older": is_older,
             "end_of_data": end_of_data
         })
@@ -141,13 +127,17 @@ class ChatService(BaseService):
         updated_room_ids = set()
 
         for room_dict in rooms_to_update:
-            r_id = str(room_dict.get(Contract.ID))
+            raw_id = room_dict.get(Contract.ID) or room_dict.get(Contract.ROOM_ID)
+
+            if not raw_id:
+                continue
+
+            r_id = str(raw_id)
             updated_room_ids.add(r_id)
 
             if r_id not in self.rooms:
                 self.rooms[r_id] = ChatRoom.from_dict(room_dict)
             else:
-                self.rooms[r_id].topic = room_dict.get(Contract.TOPIC, self.rooms[r_id].topic)
                 self.rooms[r_id].is_open = room_dict.get(Contract.IS_OPEN, self.rooms[r_id].is_open)
 
             processed_items.append(self.rooms[r_id])
@@ -166,61 +156,62 @@ class ChatService(BaseService):
         self.gui_state.set_state(StateKey.SYNC_ROOMS, updated_full_list)
 
         self.gui_state.set_state(StateKey.ROOMS_UI_SIGNAL, {
-            "items": processed_items,
+            "rooms": processed_items,
             "on_top": at_top
         })
 
     def handle_join_room_response(self, data, code):
         if code == MsgCodes.SUCCESS:
             self._update_rooms_list([data])
+            room_id = str(data.get(Contract.ROOM_ID))
 
-    def _update_topics_list(self, topics_to_add, at_top=False, end_of_data=False):
-        if not topics_to_add and not end_of_data:
-            return
+            self._update_messages_list(
+                room_id=room_id,
+                messages_to_add=data.get(Contract.ITEMS, []),
+                is_older=True
+            )
 
-        current_list = self.gui_state.get_state(StateKey.SYNC_TOPICS)
+            self.switch_to_room(self.rooms.get(room_id))
+
+    def _update_generic_list(self, items_to_add, sync_key, signal_key, at_top=False, end_of_data=False):
+        current_list = self.gui_state.get_state(sync_key)
         if not isinstance(current_list, list):
             current_list = []
 
         existing_ids = {str(d.get(Contract.ID)) for d in current_list if d.get(Contract.ID) is not None}
+        new_items = [t for t in items_to_add if str(t.get(Contract.ID)) not in existing_ids] if items_to_add else []
 
-        new_items = [t for t in topics_to_add if str(t.get(Contract.ID)) not in existing_ids]
+        if new_items:
+            updated_list = new_items + current_list if at_top else current_list + new_items
+            self.gui_state.set_state(sync_key, updated_list)
 
-        if not new_items:
-            if end_of_data:
-                self.gui_state.set_state(StateKey.TOPICS_UI_SIGNAL, {
-                    "items": [],
-                    "on_top": at_top,
-                    "end_of_data": True
-                })
-            return
 
-        if at_top:
-            updated_list = new_items + current_list
-        else:
-            updated_list = current_list + new_items
-
-        self.gui_state.set_state(StateKey.SYNC_TOPICS, updated_list)
-
-        self.gui_state.set_state(StateKey.TOPICS_UI_SIGNAL, {
-            "items": new_items,
-            "on_top": at_top,
-            "end_of_data": end_of_data
-        })
+        self.gui_state.set_state(signal_key, {Contract.ITEMS: new_items, "on_top": at_top, "end_of_data": end_of_data})
 
     def handle_older_topics(self, data, code):
-        topics = data.get('items', [])
+        topics = data.get(Contract.ITEMS, [])
         is_end = data.get('end_of_data', False)
 
         if code == MsgCodes.SUCCESS:
-            self._update_topics_list(
-                topics_to_add=topics,
-                at_top=False,
-                end_of_data=is_end
-            )
+            # 🟢 שימוש בפונקציה הגנרית עם המפתחות הייעודיים של Topics
+            self._update_generic_list(topics, StateKey.SYNC_TOPICS, StateKey.TOPICS_UI_SIGNAL, at_top=False,
+                                      end_of_data=is_end)
         else:
             self.gui_state.set_state(StateKey.TOPICS_UI_SIGNAL, {
-                "items": [],
+                Contract.ITEMS: [],
+                "on_top": False,
+                "end_of_data": True
+            })
+
+    def handle_older_groups(self, data, code):
+        groups = data.get(Contract.ITEMS, [])
+        is_end = data.get('end_of_data', False)
+
+        if code == MsgCodes.SUCCESS:
+            self._update_generic_list(groups, StateKey.SYNC_GROUPS, StateKey.GROUPS_UI_SIGNAL, at_top=False, end_of_data=is_end)
+        else:
+            self.gui_state.set_state(StateKey.GROUPS_UI_SIGNAL, {
+                Contract.ITEMS: [],
                 "on_top": False,
                 "end_of_data": True
             })
@@ -256,13 +247,15 @@ class ChatService(BaseService):
 
         self._update_messages_list(room_id, [local_msg])
 
+        self._update_rooms_list([{Contract.ROOM_ID: room_id}], at_top=True)
+
         self.dispatcher.send_msg(MsgType.SEND_MSG, payload)
         return client_nonce
 
-    def join_room(self, category=None, room_id=None):
+    def join_room(self, category=None, invite_code=None):
         payload = {}
-        if room_id:
-            payload[Contract.ROOM_ID] = room_id
+        if invite_code:
+            payload[Contract.INVITE_CODE] = invite_code
         if category:
             payload[Contract.CATEGORY] = category
 
@@ -271,10 +264,22 @@ class ChatService(BaseService):
     def create_room(self, payload):
         self.dispatcher.send_msg(MsgType.CREATE_CHAT_ROOM, payload)
 
-    def fetch_older_topics(self, last_topic_id):
+    def fetch_older_groups(self, oldest_id=None, category=None):
         payload = {
-            Contract.TOPIC_ID: last_topic_id,
+            Contract.ANCHOR_ID: oldest_id,
         }
+        if category:
+            payload[Contract.CATEGORY] = category
+
+        self.dispatcher.send_msg(MsgType.GET_OLDER_GROUPS, payload)
+
+    def fetch_older_topics(self, last_topic_id=None, category=None):
+        payload = {
+            Contract.ANCHOR_ID: last_topic_id,
+        }
+        if category:
+            payload[Contract.CATEGORY] = category
+
         self.dispatcher.send_msg(MsgType.GET_OLDER_TOPICS, payload)
 
     def handle_send_msg_response(self, data, code):
@@ -330,6 +335,28 @@ class ChatService(BaseService):
         else:
             print(f"[Cache Hit] Room {room_id_str} is already tracked. Handled locally by UI.")
 
+    def _on_connection_changed(self, is_connected):
+        if not is_connected:
+            self.mark_pending_as_failed()
+
+    def mark_pending_as_failed(self):
+        """סורק את כל ההודעות ומסמן הודעות ממתינות (tmp_) כנכשלו."""
+        all_rooms_messages = self.gui_state.get_state(StateKey.SYNC_MESSAGES) or {}
+        updated = False
+
+        for room_id, messages in all_rooms_messages.items():
+            for msg in messages:
+                if str(msg.get(Contract.MSG_ID)).startswith("tmp_") and msg.get("status") != "failed":
+                    msg["status"] = "failed"
+                    updated = True
+
+        if updated:
+            self.gui_state.set_state(StateKey.SYNC_MESSAGES, all_rooms_messages)
+
+            current_room = self.gui_state.get_state(StateKey.CURRENT_ROOM_ID)
+            self.gui_state.set_state(StateKey.MESSAGES_UI_SIGNAL, {
+                "is_refresh": True
+            })
 
 
 
@@ -339,7 +366,7 @@ class AuthService(BaseService):
         self.user_state = user_state
         self._on_success_callback = None
 
-        self.gui_state.register(StateKey.CONNECTED, self.reconnect)
+        self.gui_state.register(StateKey.HANDSHAKE_ESTABLISHED, self.reconnect)
 
         handlers = [
             MsgType.LOGIN, MsgType.SIGNUP, MsgType.FORGOT_PASSWORD,
@@ -365,6 +392,11 @@ class AuthService(BaseService):
             return
 
         self._update_user_states(data)
+        is_admin = data.get(Contract.IS_ADMIN, 0)
+        if is_admin:
+            self.gui_state.set_state(StateKey.IS_ADMIN, 'בכיר')
+        else:
+            self.gui_state.set_state(StateKey.IS_ADMIN, 'סטנדרטית')
         self._on_success_callback()
 
         self.gui_state.set_state(StateKey.LOADING_STATUS, False)
@@ -376,6 +408,7 @@ class AuthService(BaseService):
                        data.pop(Contract.ID, None) or \
                        data.pop(Contract.EMAIL, None)
             data[Contract.IDENTITY] = identity
+            data[Contract.ROLE] = self.gui_state.get_state(StateKey.ROLE)
         self.execute_auth_call(msg_type, data)
 
     def _update_user_states(self, payload):
@@ -388,13 +421,13 @@ class AuthService(BaseService):
 
         payload = data or {}
 
-        if msg_type in [MsgType.LOGIN, MsgType.SIGNUP, MsgType.FORGOT_PASSWORD, MsgType.RECONNECT]:
+        if msg_type in [MsgType.LOGIN, MsgType.SIGNUP, MsgType.FORGOT_PASSWORD, MsgType.RECONNECT, MsgType.VERIFY_OTP, MsgType.RESEND_OTP]:
             self.dispatcher.send_priority_msg(msg_type, payload)
             return
         self.dispatcher.send_msg(msg_type, payload)
 
-    def reconnect(self, is_connected):
-        if is_connected:
+    def reconnect(self, handshake_completed):
+        if not handshake_completed:
             return
 
         session_token = self.user_state.get_state(StateKey.TOKEN)
@@ -406,4 +439,3 @@ class AuthService(BaseService):
         }
 
         self.execute_auth_call(MsgType.RECONNECT, payload)
-

@@ -9,10 +9,12 @@ class GUI_State:
             StateKey.CONNECTED: False,
             StateKey.PUBLIC_ID: None,
             StateKey.LOGGED_IN: False,
+            StateKey.HANDSHAKE_ESTABLISHED: False,
             StateKey.LOADING_STATUS: False,
             StateKey.FREEZE_SCREEN: False,
             StateKey.CODE: "",
             StateKey.DISPLAY_NAME: '',
+            StateKey.IS_ADMIN: False,
             StateKey.SHOW_USER_INFO: False,
 
             # --- השינוי כאן: רק IDENTITY נשאר ---
@@ -26,9 +28,11 @@ class GUI_State:
             StateKey.CURRENT_ROOM_ID: None,
             StateKey.SYNC_ROOMS: [],
             StateKey.SYNC_TOPICS: [],
+            StateKey.SYNC_GROUPS: [],
             StateKey.SYNC_MESSAGES: [],
             StateKey.TOPICS_UI_SIGNAL: None,
             StateKey.ROOMS_UI_SIGNAL: None,
+            StateKey.GROUPS_UI_SIGNAL: None,
             StateKey.MESSAGES_UI_SIGNAL: None,
             StateKey.RELEASE_BTNS: 'normal',
             }
@@ -105,12 +109,11 @@ class ResponseTranslator:
         MsgCodes.SUCCESS: '',
         # שגיאות לקוח
         MsgCodes.INVALID_FIELDS: ".אחד או יותר מהשדות שהזנת אינם תקינים",
-        MsgCodes.UNAUTHORIZED: ".שם המשתמש או הסיסמה שגויים",
         MsgCodes.CONFLICT: ".שם המשתמש או האימייל כבר קיימים במערכת",
         MsgCodes.FLOOD_WARNING: ".קצב הפעולות מהיר מדי. נא להמתין: {expiry}",
         MsgCodes.TOO_MANY_ATTEMPTS: ".יותר מדי ניסיונות כושלים. החשבון ננעל זמנית",
         MsgCodes.SESSION_EXPIRED: ".פג התוקף של קוד האימות",
-        MsgCodes.ACCESS_DENIED: "נחסמת! נסה שוב בעוד:",
+        MsgCodes.ACCESS_DENIED: "נחסמת! נסה שוב בעוד: {expiry}",
         MsgCodes.INVALID_OTP: ":קוד האימות שהזנת שגוי, נסה שוב\n{email}\n(ניסיון {attempts} מתוך 3)",
         MsgCodes.BLOCKED_EMAIL: "יותר מדי ניסיונות למייל זה. נסה שוב מאוחר יותר",
         MsgCodes.OTP_RESENT: ':קוד אימות נשלח מחדש למייל\n {email}',
@@ -123,7 +126,7 @@ class ResponseTranslator:
         MsgCodes.CONNECTION_ESTABLISHED: "חיבור חודש בהצלחה",
         MsgCodes.CONNECTION_LOST: '...החיבור אבד',
 
-        MsgCodes.ROOM_NOT_FOUND: 'לא קיים חדר פנוי כעת'
+        MsgCodes.ROOM_NOT_FOUND: 'החדר המבוקש לא נמצא'
 
     }
 
@@ -145,7 +148,5 @@ class ResponseTranslator:
     def get_color(cls, code):
         if code in cls._COLOR_OVERRIDES:
             return cls._COLOR_OVERRIDES[code]
-
-        # 2. בדיקה לפי Range (שימוש במילון במקום if-ים)
         range_map = {1: UIColors.INFO, 2: UIColors.SUCCESS, 4: UIColors.ERROR, 5: UIColors.ERROR}
         return range_map.get(code // 100, UIColors.TEXT_MUTED)

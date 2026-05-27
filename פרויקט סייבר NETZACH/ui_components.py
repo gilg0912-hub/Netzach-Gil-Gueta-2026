@@ -74,7 +74,7 @@ class Field(ctk.CTkFrame):
             self._update_visuals('#FF5252')
             return False
 
-        valid = bool(re.fullmatch(self.pattern, text, re.IGNORECASE))
+        valid = bool(re.fullmatch(self.pattern, text))
         color = 'white' if valid else '#FF5252'
         self._update_visuals(color)
 
@@ -124,7 +124,10 @@ class Screen(ctk.CTkFrame):
         if not self.confirm_btn:
             return
 
-        self.is_valid_state = all(field.is_valid() for field in self.fields.values())
+        validations = [field.is_valid() for field in self.fields.values()]
+
+        self.is_valid_state = all(validations)
+
         should_be_disabled = self.lock or not self.is_valid_state
 
         current_state = self.confirm_btn.cget('state')

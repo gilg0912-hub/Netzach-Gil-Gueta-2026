@@ -31,37 +31,11 @@ class NavSidebar(ctk.CTkFrame):
             corner_radius=15,
         )
         self.rooms_scroll.pack(fill="both", expand=True, pady=5, padx=10)
-        self._add_mock_rooms()
 
     def _on_room_click(self, room_id):
         self.gui_state.set_state(StateKey.CURRENT_ROOM_ID, room_id)
 
-    def _add_mock_rooms(self):
-        sample_rooms = [
-            ("Cyber Security", "12", True, "room_12"),
-            ("General Chat", "45", False, "room_45"),
-            ("Physics 101", "3", False, "room_3"),
-            ("Hardware", "1", True, "room_1"),
-            ("Global Dev", "8", False, "room_8")
-        ]
-        for name, count, locked, room_id in sample_rooms:
-            symbol = "🔒" if locked else "#"
-
-            btn = ctk.CTkButton(
-                self.rooms_scroll,
-                text=f"{name}  {symbol}",
-                anchor="e",
-                fg_color="transparent",
-                hover_color=("#F1F5F9", "#132F4C"),
-                height=42,
-                corner_radius=8,
-                font=("Heebo", 13),
-                text_color=("#334155", "#CED4DA"),
-                # שימוש ב-lambda עם ברירת מחדל (current_id=room_id) כדי לנעול את המשתנה בלולאה
-                command=lambda current_id=room_id: self._on_room_click(current_id)
-            )
-            btn.pack(fill="x", pady=1, padx=5)
-
+1
 
 class Menu(ctk.CTkFrame):
     def __init__(self, parent, gui_state, **kwargs):
@@ -137,14 +111,13 @@ class RoomsListFrame(ctk.CTkScrollableFrame):
         if not signal_data:
             return
 
-        items = signal_data.get("items", [])
+        items = signal_data.get("rooms", [])
         on_top = signal_data.get("on_top", False)
 
         for room_obj in items:
             self._add_or_update_room_button(room_obj, on_top=on_top)
 
     def _add_or_update_room_button(self, room_obj, on_top=False):
-        # גישה ישירה לתכונות האובייקט
         r_id = str(room_obj.room_id)
         topic = room_obj.display_name if room_obj.display_name else "חדר ללא נושא"
         is_open = room_obj.is_open
@@ -181,9 +154,15 @@ class RoomsListFrame(ctk.CTkScrollableFrame):
                 btn.pack(fill="x", pady=2)
 
     def _pack_button_at_top(self, btn):
-        children = [child for child in self.winfo_children() if isinstance(child, ctk.CTkButton)]
-        if children:
-            btn.pack(fill="x", pady=2, before=children[0])
+        active_children = [
+            child for child in self.winfo_children()
+            if isinstance(child, ctk.CTkButton)
+               and child != btn
+               and child.winfo_manager() == 'pack'
+        ]
+
+        if active_children:
+            btn.pack(fill="x", pady=2, before=active_children[0])
         else:
             btn.pack(fill="x", pady=2)
 

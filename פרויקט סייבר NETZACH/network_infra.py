@@ -1,19 +1,29 @@
 import json, queue, threading
+from cryptography.fernet import Fernet
 
 class Message_Manager:
     def __init__(self):
-        self.outgoing_queue = queue.Queue()
+        # במקום הודעת עדיפות בודדת, יש לנו תור עדיפויות שלם
+        self.priority_queue = queue.Queue()
+        self.outgoing_queue = queue.Queue()  # תור ההודעות הרגיל
         self.incoming_queue = queue.Queue()
-        self.connection_active = threading.Event()  # ה"סכר" שלנו
-        self.priority_lock = threading.Lock()
-        self.priority_msg = None
+
+        self.connection_active = threading.Event()
+
+        self.is_authorized = threading.Event()
+        self.is_banned = threading.Event()
+
+        self.is_authorized.clear()
+        self.is_banned.clear()
+
 
     def set_priority_msg(self, msg=None):
-        with self.priority_lock:
-            self.priority_msg = msg
+        if msg:
+            self.priority_queue.put(msg)
 
     def send_msg(self, formatted_msg):
         self.outgoing_queue.put(formatted_msg)
+
     def clear_outgoing_queue(self):
         try:
             while True:
@@ -21,28 +31,48 @@ class Message_Manager:
         except queue.Empty:
             pass
 
+
     def get_next_outbound(self):
-        with self.priority_lock:
-            if self.priority_msg:
-                msg = self.priority_msg
-                self.priority_msg = None
-                return msg
+        try:
+            return self.priority_queue.get_nowait()
+        except queue.Empty:
+            pass
+
+        if self.is_banned.is_set():
+            return None
+
+        if not self.is_authorized.is_set():
+            return None
 
         try:
             return self.outgoing_queue.get_nowait()
         except queue.Empty:
             return None
 
+
 class MessageProtocol:
-    """אחראית על אריזה ופריקה של מידע"""
-    @staticmethod
-    def pack(data_dict):
-        # המרה ל-JSON עם ה-Encoder המקצועי שבנינו
+    def __init__(self):
+        self.cipher = None
+
+    def set_session_key(self, key: bytes):
+        self.cipher = Fernet(key)
+
+    def pack(self, data_dict):
         json_data = json.dumps(data_dict).encode('utf-8')
+        if self.cipher:
+            json_data = self.cipher.encrypt(json_data)
+        print('a', json_data)
+
         header = len(json_data).to_bytes(4, 'big')
         return header + json_data
 
-    @staticmethod
-    def unpack(raw_data):
-        # פיענוח מהיר של JSON
-        return json.loads(raw_data.decode('utf-8'))
+    def unpack(self, raw_data):
+        try:
+            if self.cipher:
+                raw_data = self.cipher.decrypt(raw_data)
+
+            return json.loads(raw_data.decode('utf-8'))
+
+        except Exception as e:
+            print(f"[Protocol Error] Failed to unpack message: {e}")
+            raise e
