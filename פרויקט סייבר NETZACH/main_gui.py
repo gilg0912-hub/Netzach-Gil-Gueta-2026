@@ -21,7 +21,7 @@ class Chat_GUI(ctk.CTk):
         self.footer_label= ctk.CTkLabel(self, text= '© 2026 NETZACH | נצ"ח ישראל לא ישקר – שומרים על קשר, שומרים על המורשת', font=("Heebo", 15), text_color= '#B0903D', fg_color='#0A2140')
 
 
-        self.title("What's Burning")
+        self.title("Netzach")
         self.geometry("1200x900")
 
 
@@ -106,11 +106,11 @@ class Header(ctk.CTkFrame):
         loading= self.gui_state.get_state(StateKey.LOADING_STATUS)
 
         if not conn:
-            self.loading_ui.update_view(text='Connecting To Server...' , text_color='red')
+            self.loading_ui.update_view(text='...מתחבר לשרת' , text_color='red')
         elif loading:
-            self.loading_ui.update_view(text='Loading...')
+            self.loading_ui.update_view(text='...טוען')
         else:
-            self.loading_ui.update_view(text='Connected')
+            self.loading_ui.update_view(text='מחובר')
 
     def show_guest_header(self, is_logged):
         if is_logged:

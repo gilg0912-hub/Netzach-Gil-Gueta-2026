@@ -178,7 +178,6 @@ AUTH_SCREENS = {
             {'text': "🌍 פורטל משתמשים", 'target': ScreensName.STANDARD_LOGIN, **ROLE_STYLES[UserRole.STANDARD]},
             {'text': "🎓 פורטל תלמידים", 'target': ScreensName.STUDENT_LOGIN, **ROLE_STYLES[UserRole.STUDENT]},
             {'text': "🏫 פורטל סגל הוראה", 'target': ScreensName.TEACHER_LOGIN, **ROLE_STYLES[UserRole.TEACHER]},
-            {'text': "!אין חשבון? הירשמו", **STYLE_LINK, 'target': ScreensName.STANDARD_SIGNUP}
         ]
     },
 
@@ -264,7 +263,7 @@ AUTH_SCREENS = {
     },
 
     ScreensName.FORGOT_PW: {
-        'title': "שחזור סיסמה",
+        'title': "התחברו עם קוד חד פעמי",
         'field_types': [FieldType.EMAIL],
         'confirm_text': 'Get Code',
         'confirm_command': CommandKey.HANDLE_AUTH,

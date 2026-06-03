@@ -51,24 +51,12 @@ CHAT_ROLES_CONFIG = {
 
 
 TOPIC_ACTIONS_REGISTRY = {
-    UserRole.TEACHER: lambda topic: [
-{
-            'text': "צור קבוצה לדיון ➕",
-            'fg_color': "#55446E", 'hover_color': "#6A558A",
-            'action_key': 'CREATE'
-        },
-
-    ],
+    'JOIN':{
     UserRole.STANDARD: lambda topic: [
         {
-            'text': "הצטרפות מהירה 👋",
+            'text': "הצטרף לדיון הפעיל 👋",
             'fg_color': "#3D5A80", 'hover_color': "#293E59",
             'action_key': 'JOIN'
-        },
-        {
-            'text': "פתח חדר חדש ➕",
-            'fg_color': "#2E4057", 'hover_color': "#1F2D3E",
-            'action_key': 'CREATE',
         }
     ],
     UserRole.STUDENT: lambda topic: [
@@ -78,4 +66,22 @@ TOPIC_ACTIONS_REGISTRY = {
             'action_key': 'JOIN'
         }
     ]
+},
+    'CREATE':{
+    UserRole.TEACHER: lambda topic: [
+{
+            'text': "צור קבוצה לדיון ➕",
+            'fg_color': "#55446E", 'hover_color': "#6A558A",
+            'action_key': 'CREATE'
+        },
+
+    ],
+    UserRole.STANDARD: lambda topic: [
+            {
+                'text': "פתח חדר חדש ➕",
+                'fg_color': "#2E4057", 'hover_color': "#1F2D3E",
+                'action_key': 'CREATE',
+            }
+        ],
+    }
 }

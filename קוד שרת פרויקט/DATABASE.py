@@ -233,22 +233,22 @@ class Database:
                 print(f"[DB Error] Paged rooms fetch error: {e}")
                 return []
 
-    def insert_new_room(self, public_room_id, category, display_name, created_by, allowed_role, invite_code, is_open=0):
+    def insert_new_room(self, public_room_id, category, display_name, created_by, allowed_role, invite_code, summary, is_open=0):
         with self.db_lock:
             try:
                 now_timestamp = time.time()
 
                 room_query = """
-                    INSERT INTO ChatRooms (public_room_id, category, is_open, display_name, created_by, invite_code, allowed_role, created_at) 
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO ChatRooms (public_room_id, category, is_open, display_name, created_by, invite_code, allowed_role, summary, created_at) 
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """
                 self.cursor.execute(room_query,
                                     (public_room_id, category, is_open, display_name, created_by, invite_code,
-                                     allowed_role, now_timestamp))
+                                     allowed_role, summary, now_timestamp))
 
                 internal_room_id = self.cursor.lastrowid
 
-                system_content = f"החדר '{display_name}' נוצר בהצלחה! ברוכים הבאים לצ'אט NETZACH."
+                system_content = f"!החדר נוצר בהצלחה"
                 system_msg_public_id = str(uuid.uuid4())
 
                 msg_query = """

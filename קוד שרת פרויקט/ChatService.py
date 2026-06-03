@@ -1,3 +1,4 @@
+from imageio.config.plugins import summary
 from proto.marshal.compat import message
 
 from Protocol import *
@@ -125,7 +126,7 @@ class ChatManager:
                 }
                 target_room.broadcast(broadcast_payload=join_payload, sender_socket=client.sock)
 
-                welcome_msg_content = f" ברוכים הבאים{client.display_name}!"
+                welcome_msg_content = f"!{client.display_name} ברוכים הבאים "
                 welcome_msg_id = str(uuid.uuid4())
                 self.db.insert_msg(target_room.internal_id, None, welcome_msg_content, now, welcome_msg_id,
                                    recipient_db_id=db_id)
@@ -161,6 +162,7 @@ class ChatManager:
         category = payload.get(Contract.CATEGORY)
         display_name = payload.get(Contract.DISPLAY_NAME)
         is_open = payload.get(Contract.IS_OPEN)
+        summary = payload.get(Contract.SUMMARY)
 
         room_id = str(uuid.uuid4())
         invite_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
@@ -172,7 +174,8 @@ class ChatManager:
             created_by=creator_client.p_id,
             invite_code=invite_code,
             is_open=is_open,
-            allowed_role=allowed_role
+            allowed_role=allowed_role,
+            summary = summary
         )
 
         if not success:
@@ -195,23 +198,6 @@ class ChatManager:
 
         reply_data = new_room.get_sync_payload()
         reply_data[Contract.ID] = room_id
-
-        if is_open:
-            target_topic_role = UserRole.STUDENT if creator_client.role_config == UserRole.TEACHER else UserRole.STANDARD
-
-            new_topic = {
-                "topic_id": room_id,
-                "category": category,
-                "title": display_name,
-                "summary": payload.get(Contract.SUMMARY, "אין תקציר זמין"),
-                "url": ""  # ניתן להשאיר ריק או להוסיף קישור לחדר
-            }
-
-            # שמירה במאגר ה-HotTopics
-            self.db.save_hot_topics([new_topic], target_topic_role)
-
-            # --- המשך הקוד הקיים ---
-        room_data = self.db.get_room_by_public_id(room_id)
 
         return ResponseFactory.create(
             msg_type=MsgType.CREATE_CHAT_ROOM,

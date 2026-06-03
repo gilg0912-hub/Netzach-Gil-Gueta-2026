@@ -53,7 +53,7 @@ class ChatController(ctk.CTkFrame):
 
         self.status_dot = ctk.CTkFrame(self.status_frame, corner_radius=30, fg_color= '#2ECC71', width=10, height=10)
         self.status_dot.pack(side='right', padx=10)
-        self.status_label= ctk.CTkLabel(self.status_frame, text='מערכת פעילה',  anchor='e', font=('Heebo', 12, 'bold'), width=150)
+        self.status_label= ctk.CTkLabel(self.status_frame, text='מערכת פעילה', text_color='#B0903D', anchor='e', font=('Heebo', 12, 'bold'), width=150)
         self.status_label.pack(fill='both', padx=10)
 
         self._timer_id = None
@@ -107,6 +107,8 @@ class ChatController(ctk.CTkFrame):
         self.gui_state.register(StateKey.GROUPS_UI_SIGNAL, self.sync_group_cards)
         self.gui_state.register(StateKey.ROLE, self.setup_role_ui)
 
+        self.sidebar.handle_click(0, self.show_screen('home'))
+
     def setup_role_ui(self, role):
         if not role:
             return
@@ -149,28 +151,24 @@ class ChatController(ctk.CTkFrame):
             return
 
         items = payload.get(Contract.ITEMS, [])
-        end_of_data = payload.get("end_of_data", False)
-        category = payload.get("category", "הכל")
 
         target_screen = self.screens['join']
 
-        self._process_items(target_screen, items, payload)
+
+        self._process_items(target_screen, items, payload, ak= 'JOIN')
         target_screen.finalize_load()
 
     def sync_topic_cards(self, payload):
         if not isinstance(payload, dict): return
 
         items = payload.get(Contract.ITEMS, [])
-        end_of_data = payload.get("end_of_data", False)
-
-        category = payload.get("category", "הכל")
 
         target_screen = self.screens['templates']
 
-        self._process_items(target_screen, items, payload)
+        self._process_items(target_screen, items, payload, ak='CREATE')
         target_screen.finalize_load()
 
-    def _process_items(self, target_screen, items, payload):
+    def _process_items(self, target_screen, items, payload, ak):
         if payload.get("end_of_data"):
             target_screen.update_category_status(category=payload.get("category"), is_end=True)
 
@@ -182,8 +180,7 @@ class ChatController(ctk.CTkFrame):
         on_top = payload.get("on_top", False)
         current_role = self.gui_state.get_state(StateKey.ROLE)
 
-        button_factory = TOPIC_ACTIONS_REGISTRY.get(current_role, lambda t: [])
-
+        button_factory = TOPIC_ACTIONS_REGISTRY.get(ak, lambda t: []).get(current_role, {})
         for item in items:
             raw_buttons = button_factory(item)
             live_buttons = self._prepare_buttons(raw_buttons, item)
@@ -197,6 +194,7 @@ class ChatController(ctk.CTkFrame):
                 url=item.get('url'),
                 on_top=on_top,
                 btn_configs=live_buttons,
+                display_name=item.get('display_name'),
             )
         self.after(100, target_screen.release_scroll_lock)
 

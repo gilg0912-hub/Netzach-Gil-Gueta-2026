@@ -158,10 +158,10 @@ class Loading(ctk.CTkFrame):
                           height=int(self.cget('height')))
 
         self.label = ctk.CTkLabel(self, text='', text_color="white",
-                                  font=('hebbo', int(self.cget('height') * 0.4)))
+                                  font=('hebbo', int(self.cget('height') * 0.5), 'bold'))
 
-        self.wheel.pack(side='left', padx=5)
-        self.label.pack(side='left', padx=5)
+        self.wheel.pack(side='right', padx=5)
+        self.label.pack(side='right', padx=5)
 
         self.apply_style()
 
@@ -288,13 +288,13 @@ class AnimatedGifLabel(ctk.CTkLabel):
         self._animate()
 
 class TopicCard(ctk.CTkFrame):
-    def __init__(self, master, title=None, summary=None, url=None, id =None,category=None, btn_configs=None, **kwargs):
+    def __init__(self, master, title=None, summary=None, url=None, display_name=None, id =None,category=None, btn_configs=None, **kwargs):
         super().__init__(master, corner_radius=15, fg_color=('white', "#1e293b"), border_width=2, border_color="#334155")
 
         self.category = category
         self.url = url
         self.id = id
-        print(self.category)
+
         self.cat_label = ctk.CTkLabel(
             self, text=category, font=("Heebo", 10, "bold"),
             fg_color=("#F1F5F9", "#334155"), text_color="#38bdf8", corner_radius=10
@@ -302,7 +302,7 @@ class TopicCard(ctk.CTkFrame):
         self.cat_label.pack(pady=(10, 0), padx=15, anchor="e")
 
         self.title_label = ctk.CTkLabel(
-            self, text=title, font=("Heebo", 18, "bold"),
+            self, text=title if title else display_name, font=("Heebo", 18, "bold"),
             text_color="#f8fafc", wraplength=300, justify="right"
         )
         self.title_label.pack(pady=(15, 5), padx=15, anchor="e")
@@ -313,12 +313,13 @@ class TopicCard(ctk.CTkFrame):
         )
         self.summary_label.pack(pady=5, padx=15, anchor="e")
 
-        self.link_btn = ctk.CTkButton(
-            self, text="...קרא עוד באתר המקור", font=("Heebo", 12, "underline"),
-            fg_color="transparent", text_color="#38bdf8", hover_color=('white',"#334155"),
-            cursor="hand2", height=20, command=self.open_link
-        )
-        self.link_btn.pack(pady=5, padx=10, anchor="w")
+        if self.url:
+            self.link_btn = ctk.CTkButton(
+                self, text="...קרא עוד באתר המקור", font=("Heebo", 12, "underline"),
+                fg_color="transparent", text_color="#38bdf8", hover_color=('white',"#334155"),
+                cursor="hand2", height=20, command=self.open_link
+            )
+            self.link_btn.pack(pady=5, padx=10, anchor="w")
 
         print('A')
         if btn_configs:

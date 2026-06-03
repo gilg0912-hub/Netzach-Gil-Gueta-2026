@@ -9,9 +9,41 @@ import win32com.client
 
 from ui_components import TopicCard, RequiredEntry
 from app_constants import StateKey, Contract, UserRole, MsgType
+"""
+    def _intercept_scroll_set(self, first, last):
+        # remarks: הפעלת פונקציית הגלילה המקורית של רכיב ה-UI כדי לשמור על תצוגה תקינה
+        self._original_scrollbar_set(first, last)
 
+        # remarks: עצירת הפעולה אם הלקוח לא מחובר לשרת (אין טעם לנסות למשוך נתונים)
+        if not self.gui_state.get_state(StateKey.CONNECTED):
+            return
+
+        # remarks: מניעת בקשות כפולות - אם כבר מתבצעת טעינת נתונים ברקע, הפונקציה עוצרת כאן
+        if self._is_loading:
+            return
+
+        # remarks: המרת פרמטרי המיקום (תחילת וסוף אזור הגלילה המוצג) לערכים עשרוניים לצורך חישוב
+        current_top = float(first)
+        current_bottom = float(last)
+
+        # remarks: בדיקת מצב בו כל התוכן נכנס במסך אחד (אין באמת גלילה פעילה), ולכן אין מה לטעון
+        if current_top == 0.0 and current_bottom == 1.0:
+            return
+
+        # remarks: זיהוי גלילה לקצה העליון (5% עליונים) - טריגר לטעינת היסטוריה ישנה ("גלילה אינסופית" למעלה)
+        if current_top <= 0.05 and self.on_top_reach is not None:
+            self._is_loading = True
+            self.on_top_reach()
+
+        # remarks: זיהוי גלילה לקצה התחתון (5% תחתונים) - טריגר לטעינת הודעות או נתונים חדשים
+        elif current_bottom >= 0.95 and self.on_bottom_reach is not None:
+            self._is_loading = True
+            self.on_bottom_reach()
+
+"""
 class RoomProfileWindow(ctk.CTkToplevel):
     def __init__(self, parent, room_data):
+        print(room_data.is_open)
         super().__init__(parent)
         self.title("פרטי חדר")
         self.geometry("400x550")
@@ -115,6 +147,7 @@ class ScrollScreen(ctk.CTkScrollableFrame):
         self._original_scrollbar_set = self._scrollbar.set
 
         self._parent_canvas.configure(yscrollcommand=self._intercept_scroll_set)
+
 
 
     def _intercept_scroll_set(self, first, last):
@@ -512,13 +545,13 @@ class CreateScreen(BaseScreen):
     def setup_view(self):
         # 1. כותרות
         self.title_label = ctk.CTkLabel(
-            self, text="ניהול ואירוח מרחב למידה חדש",
+            self, text="ניהול ואירוח מרחב שיחה חדש",
             text_color="#B0903D", font=("Heebo", 26, "bold")
         )
         self.title_label.grid(row=0, column=0, pady=(20, 5), sticky="ew")
 
         self.subtitle_label = ctk.CTkLabel(
-            self, text="כמורה במערכת נצ\"ח, באפשרותך לפתוח קבוצת דיון לימודית מבוססת AI או להגדיר נושא ותקציר משלך.",
+            self, text=",במערכת נצ\"ח \n.באפשרותך לפתוח קבוצת דיון לימודית/ אקטואלית מבוססת בינה מלאכותית או להגדיר נושא ותקציר משלך",
             text_color="#A0AEC0", font=("Heebo", 14)
         )
         self.subtitle_label.grid(row=1, column=0, pady=(0, 15), sticky="ew")
@@ -591,7 +624,9 @@ class CreateScreen(BaseScreen):
             border_width=1, border_color=("#E2E8F0", "#30363D"),
             wrap="word", activate_scrollbars=True
         )
-        self.summary_textbox.tag_config("right_align", justify="right")  # תגית יישור לימין
+
+        self.summary_textbox.tag_config("right", justify=ctk.RIGHT)
+
         self.summary_textbox.grid(row=8, column=0, padx=25, pady=(0, 15), sticky="ew")
 
         # 3. תווית הודעות סטטוס ושגיאה
@@ -600,7 +635,7 @@ class CreateScreen(BaseScreen):
 
         # 4. כפתור יצירת החדר
         self.create_btn = ctk.CTkButton(
-            self, text="🚀 צור והפעל מרחב למידה",
+            self, text="🚀 צור והפעל מרחב שיחה",
             font=("Heebo", 18, "bold"), fg_color="#B0903D", hover_color="#C5A452", text_color="#0D1117",
             width=250, height=42, corner_radius=8,
             command=self.handle_create_room
@@ -692,15 +727,16 @@ class DiscoveryBase(BaseScreen):
             fg_color="transparent", corner_radius=0
         )
 
-    def add_card(self, id=None, title=None, summary=None, url=None, category=None, on_top=False, **kwargs):
+    def add_card(self, id=None, title=None, summary=None, url=None, category=None, display_name=None, on_top=False, **kwargs):
 
         filter_val = self.filter_menu.get() if self.filter_menu else "הכל"
         should_show = (filter_val == "הכל" or category == filter_val)
 
         new_card = TopicCard(
             self.scrollable_area, title=title, summary=summary,
-            category=category, url=url, id=id, **kwargs
+            category=category, url=url, id=id, display_name= display_name, **kwargs
         )
+        print('AAAAAAAAAAAAAAA', display_name)
 
         if on_top and self.all_cards:
             if should_show:
