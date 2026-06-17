@@ -3,13 +3,15 @@ import select
 import threading
 from network_infra import MessageProtocol
 import time
+import queue
+import pyaudio
 
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.fernet import Fernet
 
 from app_constants import MsgType, MsgCodes, Contract, StateKey
-
+from MediaProtocol import *
 
 class Server_Communicator(threading.Thread):
     def __init__(self, server_ip, server_port, user_state, msg_manager):
@@ -25,6 +27,7 @@ class Server_Communicator(threading.Thread):
         self.incoming_buffer = b''
 
     def run(self):
+
         while self.user_state.get_state(StateKey.IS_ACTIVE):
 
             if self.msg_manager.is_banned.is_set():
@@ -224,3 +227,204 @@ class SocketManager:
             except:
                 pass
             self.sock = None
+
+
+class MediaCommunicator(threading.Thread):
+    # 🟢 סנכרון מלא של סדר הפרמטרים מול פאנל ה-GUI
+    def __init__(self, server_ip, server_udp_port, room_id, frame_queue, udp_token, my_p_id):
+        super().__init__(daemon=True, name="UDP-Media-Thread")
+
+        self.server_address = (server_ip, server_udp_port)
+        self.cipher_lock = threading.Lock()
+        self.cipher = None
+        self.room_id = room_id
+        self.udp_token = udp_token
+        self.my_p_id = my_p_id
+
+        self.is_active = threading.Event()
+        self.frame_queue = frame_queue
+
+        self.udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.udp_sock.settimeout(1.0)
+
+        self.audio_queue = queue.Queue()
+        self.pyaudio_instance = pyaudio.PyAudio()
+
+        self.CHUNK = 1024
+        self.FORMAT = pyaudio.paInt16
+        self.CHANNELS = 1
+        self.RATE = 16000
+
+        # משתנים לשמירת ת'רדי השמע לצורך סגירה בטוחה
+        self.record_thread = None
+        self.play_thread = None
+
+    def update_media_key(self, new_media_key):
+        """
+        מתודה ציבורית בטוחה (Thread-Safe) לעדכון מפתח ההצפנה בזמן ריצה.
+        תקרא מתוך ת'רד ה-TCP (כשמתקבל סיגנל מהשרת) או מרמת ה-Service.
+        """
+        if isinstance(new_media_key, str):
+            new_media_key = new_media_key.encode('utf-8')
+
+        with self.cipher_lock:
+            self.cipher = Fernet(new_media_key)
+        print(f"[Media Lock] Media cipher rotated successfully for room {self.room_id}")
+
+    def _get_cipher(self):
+        """ שליפה מהירה ואטומית של הציפר הנוכחי ללא חסימת תהליכי הסטרימינג """
+        with self.cipher_lock:
+            return self.cipher
+
+    def run(self):
+        self.is_active.set()
+        last_join_time = 0.0
+
+        self.record_thread = threading.Thread(target=self._record_audio_loop, daemon=True, name="UDP-Audio-Record")
+        self.play_thread = threading.Thread(target=self._play_audio_loop, daemon=True, name="UDP-Audio-Play")
+
+        self.record_thread.start()
+        self.play_thread.start()
+
+        while self.is_active.is_set():
+            try:
+                # 🛑 תיקון שגיאה 1: מניעת חנק מעבד. אם אין מפתח, ישנים 100 מילישניות וממשיכים
+                current_cipher = self._get_cipher()
+                if not current_cipher:
+                    time.sleep(0.1)
+                    continue
+
+                now = time.time()
+                if now - last_join_time > 3.0:
+                    join_packet = MediaProtocol.pack(
+                        pkt_type=MediaProtocol.TYPE_JOIN,
+                        room_id=self.room_id,
+                        sender_id=self.my_p_id,
+                        payload=self.udp_token.encode('utf-8')
+                    )
+                    self.udp_sock.sendto(join_packet, self.server_address)
+                    last_join_time = now
+
+                # קריאת פאקטה מהרשת
+                data, addr = self.udp_sock.recvfrom(65535)
+                pkt_type, r_id, sender_id, encrypted_payload = MediaProtocol.unpack(data)
+
+                if pkt_type == MediaProtocol.TYPE_VIDEO:
+                    # פענוח בטוח בתוך ת'רד התקשורת
+                    decrypted_frame = current_cipher.decrypt(encrypted_payload)
+                    try:
+                        self.frame_queue.put((sender_id, decrypted_frame), block=False)
+                    except queue.Full:
+                        pass
+
+                elif pkt_type == MediaProtocol.TYPE_AUDIO:
+                    decrypted_audio = current_cipher.decrypt(encrypted_payload)
+                    try:
+                        self.audio_queue.put((sender_id, decrypted_audio), block=False)
+                    except queue.Full:
+                        pass
+
+            except socket.timeout:
+                continue
+            except Exception as e:
+                # מניעת קריסה חרישית וספאם במקרה של שגיאת סוקט
+                time.sleep(0.01)
+
+    def send_media(self, raw_bytes):
+        if self.is_active.is_set():
+            try:
+                current_cipher = self._get_cipher()
+                encrypted_payload = current_cipher.encrypt(raw_bytes)
+                video_packet = MediaProtocol.pack(
+                    pkt_type=MediaProtocol.TYPE_VIDEO,
+                    room_id=self.room_id,
+                    sender_id=self.my_p_id,
+                    payload=encrypted_payload
+                )
+                self.udp_sock.sendto(video_packet, self.server_address)
+            except Exception:
+                pass
+
+    def _record_audio_loop(self):
+        try:
+            input_stream = self.pyaudio_instance.open(
+                format=self.FORMAT,
+                channels=self.CHANNELS,
+                rate=self.RATE,
+                input=True,
+                frames_per_buffer=self.CHUNK
+            )
+        except Exception as e:
+            print(f"[Audio Error] Microphone failed: {e}")
+            return
+
+        while self.is_active.is_set():
+            try:
+                raw_audio = input_stream.read(self.CHUNK, exception_on_overflow=False)
+                if raw_audio:
+                    current_cipher = self._get_cipher()
+                    encrypted_audio = current_cipher.encrypt(raw_audio)
+                    audio_packet = MediaProtocol.pack(
+                        pkt_type=MediaProtocol.TYPE_AUDIO,
+                        room_id=self.room_id,
+                        sender_id=self.my_p_id,
+                        payload=encrypted_audio
+                    )
+                    self.udp_sock.sendto(audio_packet, self.server_address)
+            except Exception:
+                continue
+
+        input_stream.stop_stream()
+        input_stream.close()
+
+    def _play_audio_loop(self):
+        try:
+            output_stream = self.pyaudio_instance.open(
+                format=self.FORMAT,
+                channels=self.CHANNELS,
+                rate=self.RATE,
+                output=True,
+                frames_per_buffer=self.CHUNK
+            )
+        except Exception:
+            return
+
+        while self.is_active.is_set():
+            try:
+                _, decrypted_audio = self.audio_queue.get(timeout=0.2)
+                output_stream.write(decrypted_audio)
+            except queue.Empty:
+                continue
+            except Exception:
+                continue
+
+        output_stream.stop_stream()
+        output_stream.close()
+
+    def stop(self):
+        # 1. כיבוי ה-Flag הראשי - גורם לכל הת'רדים לדעת שעליהם לצאת מהלולאה
+        self.is_active.clear()
+
+        try:
+            leave_packet = MediaProtocol.pack(
+                pkt_type=MediaProtocol.TYPE_LEAVE,
+                room_id=self.room_id,
+                sender_id=self.my_p_id
+            )
+            self.udp_sock.sendto(leave_packet, self.server_address)
+            self.udp_sock.close()
+        except Exception:
+            pass
+
+        # 2. 🟢 וידוא סגירת סטרימים: ממתינים שהת'רדים יסיימו בצורה חלקה ויסגרו את הצינורות שלהם
+        if self.record_thread and self.record_thread.is_alive():
+            self.record_thread.join(timeout=1.0)
+        if self.play_thread and self.play_thread.is_alive():
+            self.play_thread.join(timeout=1.0)
+
+        # 3. רק לאחר שאין אף ת'רד רקע שנוגע ברכיבי השמע, בטוח לסגור את ה-Instance
+        try:
+            self.pyaudio_instance.terminate()
+            print("[Audio System] Closed successfully without leaks.")
+        except Exception:
+            pass

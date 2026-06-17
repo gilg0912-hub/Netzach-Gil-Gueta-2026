@@ -1,16 +1,13 @@
-from imageio.config.plugins import summary
-from proto.marshal.compat import message
-
 from Protocol import *
 import time
 import uuid
 import random
 import string
 import threading
-
+import os
 
 class ChatManager:
-    def __init__(self, db, send_to_client):
+    def __init__(self, db, send_to_client, send_to_user):
         self.db = db
         self.rooms = {
             "educational": {},
@@ -18,6 +15,7 @@ class ChatManager:
         }
 
         self.send_to_client = send_to_client
+        self.send_to_user = send_to_user
 
         self.manager_lock = threading.Lock()
 
@@ -38,7 +36,7 @@ class ChatManager:
 
         client_nonce = payload.get(Contract.NONCE)
 
-        msg_id = target_room.handle_new_message(client.db_id, client.p_id, client.sock, content)
+        msg_id = target_room.handle_new_message(client.db_id, client.p_id, content)
 
         if msg_id:
             return ResponseFactory.create(
@@ -60,7 +58,7 @@ class ChatManager:
                 with self.manager_lock:
                     if r_id not in self.rooms[env]:
                         participants = self.db.get_participants_by_room_id(r_id)
-                        self.rooms[env][r_id] = ChatRoom(self.db, send_func=self.send_to_client,
+                        self.rooms[env][r_id] = ChatRoom(self.db, send_func=self.send_to_user,
                                                          participants=participants, **dict(room_data))
                 return self.rooms[env][r_id]
 
@@ -76,7 +74,7 @@ class ChatManager:
             room_data = self.db.find_available_room_for_user(category, p_id)
             if room_data:
                 r_id = room_data['public_room_id']
-                new_room = ChatRoom(self.db, send_func=self.send_to_client, **room_data)
+                new_room = ChatRoom(self.db, send_func=self.send_to_user, **room_data)
                 with self.manager_lock:
                     self.rooms[env][r_id] = new_room
                 return new_room
@@ -99,9 +97,6 @@ class ChatManager:
             return ResponseFactory.create(msg_type=MsgType.JOIN_ROOM, code=MsgCodes.ROOM_NOT_FOUND)
 
         with target_room.lock:
-            if client.sock not in target_room.clients_sockets:
-                target_room.clients_sockets.append(client.sock)
-
             is_already_in_room = target_room.is_user_in_room(p_id)
 
             if not is_already_in_room:
@@ -124,7 +119,7 @@ class ChatManager:
                     Contract.EVENT: RoomEvent.USER_JOINED,
                     Contract.PARTICIPANTS: target_room.participants.copy()
                 }
-                target_room.broadcast(broadcast_payload=join_payload, sender_socket=client.sock)
+                target_room.broadcast(broadcast_payload=join_payload, sender_p_id= client.p_id)
 
                 welcome_msg_content = f"!{client.display_name} ברוכים הבאים "
                 welcome_msg_id = str(uuid.uuid4())
@@ -185,10 +180,8 @@ class ChatManager:
         if not room_data:
             return ResponseFactory.error(msg_type=MsgType.CREATE_CHAT_ROOM, code=MsgCodes.INTERNAL_SERVER_ERROR)
 
-        new_room = ChatRoom(db=self.db, send_func=self.send_to_client, participants={}, **room_data)
-
+        new_room = ChatRoom(db=self.db, send_func=self.send_to_user, participants={}, **room_data)
         new_room.participants[creator_client.p_id] = creator_client.display_name
-        new_room.clients_sockets.append(creator_client.sock)
 
         self.db.add_user_to_room_db(room_id, creator_client.db_id)
 
@@ -222,7 +215,7 @@ class ChatManager:
                         if room_id not in self.rooms[env]:
                             self.rooms[env][room_id] = ChatRoom(
                                 db=self.db,
-                                send_func=self.send_to_client,
+                                send_func=self.send_to_user,
                                 participants=participants,
                                 **room_data
                             )
@@ -231,8 +224,6 @@ class ChatManager:
             target_room = self.rooms[env].get(room_id)
             if target_room:
                 with target_room.lock:
-                    if client.sock not in target_room.clients_sockets:
-                        target_room.clients_sockets.append(client.sock)
                     target_room.participants[p_id] = client.display_name
 
                 all_rooms_sync_data.append(target_room.get_sync_payload())
@@ -316,6 +307,164 @@ class ChatManager:
             }
         )
 
+    def validate_udp_join(self, room_id, token):
+        target_room = self._find_room_by_id(room_id)
+        if not target_room:
+            return False
+
+        with target_room.lock:
+            if token in target_room.expected_udp_tokens:
+                # האסימון תקין! המשתמש מורשה.
+                # אנחנו מוחקים את האסימון כדי שלא ישתמשו בו שוב (Replay Attack)
+                del target_room.expected_udp_tokens[token]
+                return True
+        return False
+
+    def _find_room_by_id(self, room_id):
+        for env in self.rooms.values():
+            if room_id in env:
+                return env[room_id]
+        return None
+
+    def handle_start_call(self, client, payload):
+        return self._process_video_call_request(client, payload, MsgType.START_CALL)
+
+    def handle_join_call(self, client, payload):
+        return self._process_video_call_request(client, payload, MsgType.JOIN_CALL)
+
+    def _process_video_call_request(self, client, payload, msg_type):
+        room_id = payload.get(Contract.ROOM_ID)
+        env = self._get_env_by_role(client.role_config)
+        target_room = self.rooms[env].get(room_id)
+
+        if not target_room or not target_room.is_user_in_room(client.p_id):
+            return ResponseFactory.error(msg_type, MsgCodes.ACCESS_DENIED)
+
+        # יצירת טוקן UDP (נשאר כפי שהיה)
+        udp_token = target_room.generate_udp_token(client.p_id)
+
+        with target_room.lock:
+            # טיפול ב-START_CALL
+            if msg_type == MsgType.START_CALL:
+                if target_room.is_call_active:
+                    return ResponseFactory.error(msg_type)
+
+                target_room.is_call_active = True
+                target_room.distributor_p_id = client.p_id
+                target_room.active_participants = [client.p_id]
+
+                # 🟢 תיקון: הפצה לכל חברי החדר בצ'אט (ולא רק למי שבשיחה)
+                target_room.broadcast(
+                    broadcast_payload={Contract.ROOM_ID: room_id, Contract.CALL_STATE: True},
+                    sender_p_id=client.p_id,  # היוזם יקבל Success ב-TCP Response, השאר יקבלו Broadcast
+                    msg_type=MsgType.CALL_STATE
+                )
+
+            # טיפול ב-JOIN_CALL
+            elif msg_type == MsgType.JOIN_CALL:
+                if not target_room.is_call_active:
+                    return ResponseFactory.error(msg_type, MsgCodes.NOT_FOUND)
+
+                target_room.active_participants.append(client.p_id)
+
+                # broadcast לכל המשתתפים בשיחה
+                self._broadcast_to_call(target_room, MsgType.USER_JOINED_CALL, {
+                    Contract.ROOM_ID: room_id,
+                    Contract.PUBLIC_ID: client.p_id,
+                    Contract.PUBLIC_CALL_KEY: payload.get(Contract.PUBLIC_CALL_KEY)
+                })
+
+        return ResponseFactory.create(msg_type, MsgCodes.SUCCESS, {
+            Contract.ROOM_ID: room_id,
+            Contract.UDP_TOKEN: udp_token
+        })
+
+    def handle_update_room_media_keys(self, client, payload):
+        room_id = payload.get(Contract.ROOM_ID)
+        keys_map = payload.get("encrypted_keys_map", {})
+        env = self._get_env_by_role(client.role_config)
+        target_room = self.rooms[env].get(room_id)
+
+        if not target_room or client.p_id != target_room.distributor_p_id:
+            print(f"[Security Alert] Unauthorized key update attempt by {client.p_id}")
+            return ResponseFactory.error(MsgType.UPDATE_ROOM_MEDIA_KEY, MsgCodes.ACCESS_DENIED)
+
+        # השרת רץ על המילון ומפיץ לכל p_id את ה-Media Key הספציפי שהוצפן עבורו ב-RSA
+        for target_pid, encrypted_key in keys_map.items():
+
+            delivery_packet = ResponseFactory.create(
+                msg_type=MsgType.DELIVER_CALL_MEDIA_KEY,
+                code=MsgCodes.SUCCESS,
+                raw_data={
+                    Contract.ROOM_ID: room_id,
+                    "encrypted_media_key": encrypted_key
+                }
+            )
+
+            # שליחה ישירה ב-TCP לכל לקוח יעד
+            try:
+                self.send_to_user(target_pid, delivery_packet)
+            except Exception as e:
+                print(f"[Key Distribution Error] Failed to send key to {target_pid}: {e}")
+
+        # ה-Host אינו מצפה לתשובה חזרה מהשרת עבור הודעה זו
+        return None
+
+    def handle_leave_call(self, client, payload):
+        room_id = payload.get(Contract.ROOM_ID)
+        env = self._get_env_by_role(client.role_config)
+        target_room = self.rooms[env].get(room_id)
+
+        if not target_room or not target_room.is_user_in_room(client.p_id):
+            return ResponseFactory.error(MsgType.LEAVE_CALL)
+
+        with target_room.lock:
+            if not target_room.is_call_active:
+                return ResponseFactory.error(MsgType.LEAVE_CALL, MsgCodes.NOT_FOUND)
+
+            is_distributor = (client.p_id == target_room.distributor_p_id)
+
+            # הסרת המשתמש מהרשימה הפעילה
+            if client.p_id in target_room.active_participants:
+                target_room.active_participants.remove(client.p_id)
+
+            # לוגיקה במקרה שהמשתמש הוא Host
+            if is_distributor:
+
+                # תרחיש 2: משתמש Standard (דמוקרטי) עזב - עושים Handover
+                if len(target_room.active_participants) > 0:
+                    target_room.distributor_p_id = target_room.active_participants[
+                            0] if target_room.active_participants else None
+
+                    self._broadcast_to_call(target_room, MsgType.USER_LEFT_CALL, {
+                        Contract.ROOM_ID: room_id,
+                        Contract.PUBLIC_ID: client.p_id,
+                    })
+                else:
+                    # החדר התרוקן לגמרי
+                    target_room.is_call_active = False
+                    target_room.distributor_p_id = None
+                    self._broadcast_to_call(target_room, MsgType.CALL_STATE, {Contract.CALL_STATE: False})
+
+
+
+            else:
+                # תרחיש 3: משתמש רגיל (לא Host) עזב
+                self._broadcast_to_call(target_room, MsgType.USER_LEFT_CALL, {
+                    Contract.ROOM_ID: room_id,
+                    Contract.PUBLIC_ID: client.p_id
+                })
+
+        return ResponseFactory.create(MsgType.LEAVE_CALL, MsgCodes.SUCCESS, {Contract.ROOM_ID: room_id})
+
+    def _broadcast_to_call(self, room, msg_type, raw_data= {}, sender_p_id= None):
+        packet = ResponseFactory.create(msg_type, MsgCodes.SUCCESS, raw_data)
+        for p_id in room.active_participants:
+            try:
+                if sender_p_id != p_id:
+                    self.send_to_user(p_id, packet)
+            except Exception as e:
+                print(f"Error broadcasting to {p_id} in call: {e}")
 
 class ChatRoom:
     def __init__(self, db, id, public_room_id, created_by, display_name, created_at, category, allowed_role, is_open, participants, invite_code, summary, send_func,
@@ -331,9 +480,13 @@ class ChatRoom:
         self.allowed_role = allowed_role
         self.is_open = (is_open == 0)
         self.participants = participants if participants is not None else {}
-        self.clients_sockets = []
         self.created_at = created_at
         self.send_func = send_func
+        self.expected_udp_tokens = {}
+
+        self.distributor_p_id = None
+        self.is_call_active = False
+        self.active_participants = []  # הוסף זאת
 
         self.lock = threading.RLock()
 
@@ -350,13 +503,14 @@ class ChatRoom:
                 Contract.DISPLAY_NAME: self.display_name,
                 Contract.IS_OPEN: self.is_open,
                 Contract.SUMMARY: self.summary,
+                Contract.IS_CALL_ACTIVE: self.is_call_active,
             }
 
     def is_user_in_room(self, p_id):
         with self.lock:
             return p_id in self.participants
 
-    def broadcast(self, broadcast_payload, sender_socket=None, msg_type=MsgType.RECEIVE_MSG):
+    def broadcast(self, broadcast_payload, sender_p_id=None, msg_type=MsgType.RECEIVE_MSG):
         with self.lock:
             message = ResponseFactory.create(
                 msg_type=msg_type, # משתמש בפרמטר במקום ערך קבוע
@@ -364,21 +518,14 @@ class ChatRoom:
                 raw_data=broadcast_payload
             )
 
-            disconnected = []
-
-            for sock in self.clients_sockets:
-                if sock != sender_socket:
+            for p_id in self.participants.keys():
+                if p_id != sender_p_id:
                     try:
-                        self.send_func(sock, message)
+                        self.send_func(p_id, message)
                     except Exception as e:
-                        print(f"Error broadcasting to {sock}: {e}")
-                        disconnected.append(sock)
+                        print(f"Error logical broadcast to {p_id}: {e}")
 
-            for sock in disconnected:
-                if sock in self.clients_sockets:
-                    self.clients_sockets.remove(sock)
-
-    def handle_new_message(self, sender_db_id, sender_p_id, sender_sock, content):
+    def handle_new_message(self, sender_db_id, sender_p_id, content):
         now = time.time()
         public_msg_id = str(uuid.uuid4())
 
@@ -393,6 +540,13 @@ class ChatRoom:
                 Contract.TIMESTAMP: now
             }
 
-            self.broadcast(broadcast_payload=broadcast_data, sender_socket=sender_sock)
+            self.broadcast(broadcast_payload=broadcast_data, sender_p_id=sender_p_id)
             return public_msg_id
         return None
+
+    def generate_udp_token(self, p_id):
+        # ייצור אסימון אקראי וחד פעמי
+        token = os.urandom(16).hex()
+        with self.lock:
+            self.expected_udp_tokens[token] = p_id
+        return token

@@ -69,6 +69,7 @@ class Chat_GUI(ctk.CTk):
         for i, w in enumerate(column_weights):
             container.grid_columnconfigure(i, weight=w)
 
+
 class Header(ctk.CTkFrame):
     def __init__(self, parent, gui_state, gif_path=r"the_project_final_gif.gif"):
         super().__init__(parent, fg_color='#0A2140', corner_radius=0, bg_color='transparent')
@@ -172,6 +173,19 @@ class AppBody(ctk.CTkFrame):
 
         if last_type in [MsgType.LOGIN, MsgType.SIGNUP]:
             self.screen_manager.show_screen(self, AppScreens.CHAT)
+
+    def process_logout(self):
+        # 1. ניתוק
+        auth_service = self.services.get('auth')
+        if auth_service:
+            auth_service.disconnect()
+
+        # 2. App_Context בונה הכל מחדש ומעביר
+        self._rebuild_callback()  # ← callback שמוזן מ-App_Context
+
+        # 3. מסך auth
+        self.screen_manager.show_screen(self, AppScreens.AUTH, side='top')
+
 
 class ScreenManager:
     def __init__(self, gui_state, services):

@@ -75,6 +75,16 @@ class Contract(StrEnum):
     NAME = 'name'
     INVITE_CODE = 'invite_code'
 
+
+    CALL_STATE = 'call_state'
+    START_CALL = 'start_call'
+    PUBLIC_CALL_KEY = 'public_call_key'
+    IS_CALL_ACTIVE = 'is_call_active'
+    MEDIA_KEY = 'media_key'
+    ACTIVE_MEDIA_KEY = 'active_call_media_key'
+    UDP_TOKEN = 'udp_token'
+
+
 class RoomEvent(IntEnum):
     USER_JOINED = 1
     USER_LEFT = 2
@@ -109,6 +119,19 @@ class MsgType(StrEnum):
     GET_OLDER_MESSAGES = 'get_older_messages'
     GET_OLDER_TOPICS = 'get_older_topics'
     GET_OLDER_GROUPS = 'get_older_groups'
+
+    CALL_STATE = 'call_state'
+    START_CALL = 'start_call'
+    JOIN_CALL = 'join_call'
+    USER_JOINED_CALL = 'user_joined_call'
+    USER_LEFT_CALL = 'user_left_call'
+    LEAVE_CALL = 'leave_call'
+    CALL_ESTABLISHED = 'call_established'
+    REQ_MEDIA_KEY = 'req_media_key'
+    UPDATE_ROOM_MEDIA_KEY = 'update_room_media_key'
+    DELIVER_CALL_MEDIA_KEY = 'deliver_call_media_key'
+
+    LOGOUT = 'logout'
 
 
 from enum import IntEnum
@@ -212,6 +235,10 @@ class MsgStructures:
         MsgType.GET_OLDER_GROUPS: [{Contract.ANCHOR_ID}, {Contract.ANCHOR_ID, Contract.CATEGORY}],
         MsgType.SEND_MSG: [{Contract.ROOM_ID, Contract.CONTENT, Contract.NONCE}],
         MsgType.GET_OLDER_MESSAGES: [{Contract.ROOM_ID, Contract.ANCHOR_ID}],
+        MsgType.START_CALL: [{Contract.ROOM_ID, Contract.PUBLIC_CALL_KEY}],
+        MsgType.JOIN_CALL: [{Contract.ROOM_ID, Contract.PUBLIC_CALL_KEY}],
+        MsgType.UPDATE_ROOM_MEDIA_KEY: [{Contract.ROOM_ID, "encrypted_keys_map"}],
+        MsgType.LEAVE_CALL: [{Contract.ROOM_ID}],
     }
 
     @staticmethod

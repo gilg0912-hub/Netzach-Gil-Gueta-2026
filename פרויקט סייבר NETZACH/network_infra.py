@@ -61,7 +61,7 @@ class MessageProtocol:
         json_data = json.dumps(data_dict).encode('utf-8')
         if self.cipher:
             json_data = self.cipher.encrypt(json_data)
-        print('a', json_data)
+        print('encrypted data', json_data)
 
         header = len(json_data).to_bytes(4, 'big')
         return header + json_data

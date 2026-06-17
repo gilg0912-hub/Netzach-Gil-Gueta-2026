@@ -46,6 +46,15 @@ class StateKey(StrEnum):
     SUGGESTED_TOPIC = 'suggested_topic'
     SUGGESTED_TOPIC_ID = 'suggested_topic_id'
     RELEASE_BTNS = 'release_btn'
+    ROOM_VIDEO_STATUS = 'room_video_status'
+
+    PUBLIC_CALL_KEY = 'public_call_key'
+    PRIVATE_CALL_KEY = 'private_call_key'
+
+    CALL_ESTABLISHED = 'call_established'
+    ACTIVE_CALL_ROOM_ID ='active_call_room_id'
+    ACTIVE_MEDIA_KEY = 'active_media_key'
+    PENDING_UDP_TOKEN = 'pending_udp_token'
 
 class RequestFactory:
     """יצירת בקשות מהלקוח לשרת"""
@@ -86,7 +95,20 @@ class MsgType(StrEnum):
     GET_OLDER_TOPICS = 'get_older_topics'
     GET_OLDER_GROUPS = 'get_older_groups'
 
-    AUTH_UPLOAD = 'auth_upload'
+    CALL_STATE = 'call_state'
+    START_CALL = 'start_call'
+    JOIN_CALL = 'join_call'
+    USER_JOINED_CALL = 'user_joined_call'
+    USER_LEFT_CALL = 'user_left_call'
+    LEAVE_CALL = 'leave_call'
+    CALL_ESTABLISHED = 'call_established'
+    REQ_MEDIA_KEY = 'req_media_key'
+    UPDATE_ROOM_MEDIA_KEY = 'update_room_media_key'
+    DELIVER_CALL_MEDIA_KEY = 'deliver_call_media_key'
+
+
+
+    LOGOUT = 'logout'
 
 class ResponseUtils:
     @staticmethod
@@ -150,11 +172,8 @@ class MsgCodes(IntEnum):
     SERVICE_UNAVAILABLE = 503
 
 class Contract(StrEnum):
-
-    PUBLIC_KEY = 'public_key'
-
-
     TYPE = 'type'
+    ALLOWED_TYPE = 'allowed_type'
     TIMESTAMP = 'timestamp'
     DATA = 'payload'
     CODE = 'code'
@@ -211,6 +230,13 @@ class Contract(StrEnum):
     CREATED_AT = 'created_at'
     CREATED_BY = 'created_by'
     INVITE_CODE = 'invite_code'
+
+    IS_CALL_ACTIVE = 'is_call_active'
+    PUBLIC_CALL_KEY = 'public_call_key'
+    MEDIA_KEY = 'media_key'
+    ACTIVE_MEDIA_KEY = 'active_call_media_key'
+    UDP_TOKEN = 'udp_token'
+    CALL_STATE = 'call_state'
 
 
 class Validator:

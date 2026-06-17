@@ -1,8 +1,12 @@
 from gui_state_mgmt import *
 from abc import abstractmethod
 from chat_widgets import ChatRoom
-from app_constants import Contract, RoomEvent
+from app_constants import Contract
+from cryptography.fernet import Fernet
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
+from cryptography.hazmat.primitives import serialization, hashes
 import random
+import time
 
 
 class BaseService:
@@ -19,16 +23,30 @@ class ChatService(BaseService):
     def __init__(self, dispatcher, gui_state):
         super().__init__(dispatcher, gui_state)
         self.rooms = {}
+
     def _register_handlers(self):
+        # --- צ'אט וסנכרון בסיסי ---
         self.dispatcher.register(MsgType.SYNC_DATA, self.handle_sync_data)
         self.dispatcher.register(MsgType.JOIN_ROOM, self.handle_join_room_response)
         self.dispatcher.register(MsgType.GET_OLDER_MESSAGES, self.handle_older_messages_response)
-        self.dispatcher.register(MsgType.GET_OLDER_TOPICS, self.handle_older_topics),
+        self.dispatcher.register(MsgType.GET_OLDER_TOPICS, self.handle_older_topics)
         self.dispatcher.register(MsgType.GET_OLDER_GROUPS, self.handle_older_groups)
         self.dispatcher.register(MsgType.CREATE_CHAT_ROOM, self.handle_new_room)
         self.dispatcher.register(MsgType.SEND_MSG, self.handle_send_msg_response)
         self.dispatcher.register(MsgType.RECEIVE_MSG, self.handle_receive_msg)
         self.gui_state.register(StateKey.CONNECTED, self._on_connection_changed)
+        self.dispatcher.register(MsgType.CALL_STATE, self.room_video_call_update)
+
+        # --- ניהול שיחות וידאו ---
+        self.dispatcher.register(MsgType.START_CALL, self.handle_start_call_response)
+        self.dispatcher.register(MsgType.JOIN_CALL, self.handle_join_call_response)
+
+        # --- אבטחה וניהול מפתחות ---
+
+        # --- עדכוני משתתפים בזמן אמת (חדש) ---
+        self.dispatcher.register(MsgType.USER_JOINED_CALL, self.handle_user_joined_call)
+        self.dispatcher.register(MsgType.USER_LEFT_CALL, self.handle_user_left_call)
+        self.dispatcher.register(MsgType.DELIVER_CALL_MEDIA_KEY, self.handle_deliver_media_key)
 
     def handle_sync_data(self, data, code):
         if code == MsgCodes.SUCCESS:
@@ -220,6 +238,20 @@ class ChatService(BaseService):
         if code == MsgCodes.SUCCESS:
             self._update_rooms_list([data], at_top=True)
 
+    def room_video_call_update(self, data, code):
+        if code != MsgCodes.SUCCESS:
+            return
+
+        room_id = str(data.get(Contract.ROOM_ID))
+        is_call_active = data.get(Contract.CALL_STATE, False)
+
+        all_rooms = self.gui_state.get_state(StateKey.SYNC_ROOMS) or []
+        target_room = next((r for r in all_rooms if str(r.room_id) == room_id), None)
+
+        if target_room:
+            target_room.is_call_active = is_call_active
+            self.gui_state.set_state(StateKey.ROOM_VIDEO_STATUS, room_id)
+
     def fetch_older_messages(self, room_id, oldest_msg_id=None):
         payload = {
             Contract.ROOM_ID: room_id,
@@ -358,7 +390,176 @@ class ChatService(BaseService):
                 "is_refresh": True
             })
 
+    # --- 1. ניהול מפתחות הצפנה (RSA) ---
+    def _get_or_create_call_keys(self):
+        private_key_pem = self.gui_state.get_state(StateKey.PRIVATE_CALL_KEY)
+        public_key_pem = self.gui_state.get_state(StateKey.PUBLIC_CALL_KEY)
 
+        if private_key_pem and public_key_pem:
+            return public_key_pem
+
+        print("[Security] Generating new RSA call keys...")
+        private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+
+        private_pem = private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption()
+        )
+        public_pem = private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo
+        )
+
+        self.gui_state.set_state(StateKey.PRIVATE_CALL_KEY, private_pem)
+        self.gui_state.set_state(StateKey.PUBLIC_CALL_KEY, public_pem)
+        return public_pem
+
+    # --- 2. יצירה והצטרפות לשיחה ---
+    def start_video_call(self, room_id):
+        if self.gui_state.get_state(StateKey.ACTIVE_CALL_ROOM_ID): return
+        self.gui_state.set_state(StateKey.ACTIVE_CALL_ROOM_ID, room_id)
+        self.gui_state.set_state(StateKey.CALL_ESTABLISHED, True)
+
+        public_key_pem = self._get_or_create_call_keys()
+        self.dispatcher.send_msg(MsgType.START_CALL, {
+            Contract.ROOM_ID: room_id,
+            Contract.PUBLIC_CALL_KEY: public_key_pem.hex()
+        })
+
+    def join_video_call(self, room_id):
+        if self.gui_state.get_state(StateKey.ACTIVE_CALL_ROOM_ID): return
+        self.gui_state.set_state(StateKey.ACTIVE_CALL_ROOM_ID, room_id)
+
+        public_key_pem = self._get_or_create_call_keys()
+        self.dispatcher.send_msg(MsgType.JOIN_CALL, {
+            Contract.ROOM_ID: room_id,
+            Contract.PUBLIC_CALL_KEY: public_key_pem.hex()
+        })
+
+    def leave_video_call(self, room_id):
+        self.dispatcher.send_msg(MsgType.LEAVE_CALL, {Contract.ROOM_ID: room_id})
+        self.clear_call_state()
+
+    # --- 3. Handlers לאירועי שיחה ---
+    def handle_start_call_response(self, data, code):
+        if code == MsgCodes.SUCCESS:
+            self.gui_state.set_state(StateKey.PENDING_UDP_TOKEN, data.get(Contract.UDP_TOKEN))
+        else:
+            self.gui_state.set_state(StateKey.CALL_ESTABLISHED, False)
+
+            self.clear_call_state()
+
+    def handle_join_call_response(self, data, code):
+        if code == MsgCodes.SUCCESS:
+            self.gui_state.set_state(StateKey.PENDING_UDP_TOKEN, data.get(Contract.UDP_TOKEN))
+        else:
+            self.clear_call_state()
+
+    def handle_user_joined_call(self, data, code):
+        room_id = str(data.get(Contract.ROOM_ID))
+
+        room = self.rooms.get(room_id)
+        if not room:
+            print(f"[Warning] Received join event for unknown room {room_id}. Ignoring.")
+            return
+
+        if data:
+            p_id = str(data.get(Contract.PUBLIC_ID))
+            room.call_participants[p_id] = data.get(Contract.PUBLIC_CALL_KEY)
+            self._attempt_key_rotation(room)
+
+    def handle_user_left_call(self, data, code):
+        room = self.rooms.get(str(data.get(Contract.ROOM_ID)))
+        p_id = str(data.get(Contract.PUBLIC_ID))
+        if room and p_id in room.call_participants:
+            del room.call_participants[p_id]
+            self._attempt_key_rotation(room)
+
+    # --- 4. מנוע אבטחה ורוטציית מפתחות ---
+    def _attempt_key_rotation(self, room):
+        if not room.call_participants: return
+        distributor_p_id = min(room.call_participants.keys())
+        if str(self.gui_state.get_state(StateKey.PUBLIC_ID)) == str(distributor_p_id):
+            self._perform_key_rotation(room.room_id)
+
+    def _perform_key_rotation(self, room_id):
+        room = self.rooms.get(room_id)
+        if not room or not room.call_participants: return
+
+        new_media_key = Fernet.generate_key()
+        self.gui_state.set_state(StateKey.ACTIVE_MEDIA_KEY, new_media_key)
+        keys_map = {}
+
+        # ניקוי משתתפים עם מפתח חסר כדי למנוע קריסה
+        valid_participants = {pid: key for pid, key in room.call_participants.items() if key is not None}
+
+        for p_id, participant_pub_key in valid_participants.items():
+            try:
+                pub_key_obj = self._prepare_public_key(participant_pub_key)
+                if not pub_key_obj:
+                    print(f"[Security Error] Could not parse key for {p_id}")
+                    continue
+
+                encrypted_key = pub_key_obj.encrypt(new_media_key, padding.OAEP(
+                    mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                    algorithm=hashes.SHA256(),
+                    label=None
+                ))
+                keys_map[p_id] = encrypted_key.hex()
+            except Exception as e:
+                print(f"[Security Error] Encryption failed for {p_id}: {e}")
+                continue
+
+        # שליחה רק אם הצלחנו ליצור מפתחות עבור כולם
+        if len(keys_map) == len(valid_participants):
+            self.dispatcher.send_msg(MsgType.UPDATE_ROOM_MEDIA_KEY, {
+                Contract.ROOM_ID: room_id,
+                "encrypted_keys_map": keys_map
+            })
+        else:
+            print(
+                f"[Security Error] Key rotation aborted: only {len(keys_map)}/{len(valid_participants)} keys generated.")
+
+    def handle_deliver_media_key(self, data, code):
+        encrypted_key_hex = data.get("encrypted_media_key")
+        if not encrypted_key_hex: return
+
+        private_key = serialization.load_pem_private_key(
+            self.gui_state.get_state(StateKey.PRIVATE_CALL_KEY),
+            password=None
+        )
+        try:
+            decrypted_key = private_key.decrypt(bytes.fromhex(encrypted_key_hex), padding.OAEP(
+                mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                algorithm=hashes.SHA256(),
+                label=None
+            ))
+            self.gui_state.set_state(StateKey.ACTIVE_MEDIA_KEY, decrypted_key)
+
+            udp_token = self.gui_state.get_state(StateKey.PENDING_UDP_TOKEN)
+            if udp_token:
+                self.gui_state.set_state(StateKey.CALL_ESTABLISHED, True)
+                self.gui_state.set_state(StateKey.PENDING_UDP_TOKEN, udp_token)
+                self.gui_state.set_state(StateKey.ACTIVE_MEDIA_KEY, decrypted_key)
+
+        except Exception as e:
+            print(f"[Security] Decryption failed: {e}")
+
+    # --- 5. עזרים ---
+    def _prepare_public_key(self, pub_key):
+        if isinstance(pub_key, str):
+            try:
+                pub_key = bytes.fromhex(pub_key)  # אם זה hex
+            except ValueError:
+                pub_key = pub_key.encode('utf-8')  # אם זה PEM רגיל
+        return serialization.load_pem_public_key(pub_key)
+
+    def clear_call_state(self):
+        self.gui_state.set_state(StateKey.ACTIVE_CALL_ROOM_ID, None)
+        self.gui_state.set_state(StateKey.ACTIVE_MEDIA_KEY, None)
+        self.gui_state.set_state(StateKey.PENDING_UDP_TOKEN, None)
+        self.gui_state.set_state(StateKey.CALL_ESTABLISHED, False)
 
 class AuthService(BaseService):
     def __init__(self, dispatcher, gui_state, user_state):
@@ -397,7 +598,9 @@ class AuthService(BaseService):
             self.gui_state.set_state(StateKey.IS_ADMIN, 'בכיר')
         else:
             self.gui_state.set_state(StateKey.IS_ADMIN, 'סטנדרטית')
-        self._on_success_callback()
+
+        if self._on_success_callback:
+            self._on_success_callback()
 
         self.gui_state.set_state(StateKey.LOADING_STATUS, False)
         self.gui_state.set_state(StateKey.LOGGED_IN, True)

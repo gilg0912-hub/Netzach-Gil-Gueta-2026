@@ -44,6 +44,7 @@ class App_Context:
             self.chat_gui.after(100, self.listen_for_messages)
 
 
+
 # MAIN WINDOW
 
 app = App_Context()

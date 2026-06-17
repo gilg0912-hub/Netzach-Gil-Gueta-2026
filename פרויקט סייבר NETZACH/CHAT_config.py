@@ -85,3 +85,10 @@ TOPIC_ACTIONS_REGISTRY = {
         ],
     }
 }
+
+# --- Video Call UI States ---
+VIDEO_BTN_STATES = {
+    "BUSY":  {"state": "disabled", "text": "🚫 עסוק בשיחה", "fg_color": ("#94a3b8", "#475569")},
+    "JOIN":  {"state": "normal",   "text": "📞 הצטרף לשיחה", "fg_color": ("#f59e0b", "#d97706"), "hover_color": ("#d97706", "#b45309")},
+    "START": {"state": "normal",   "text": "🎥 התחל שיחה", "fg_color": ("#10b981", "#059669"), "hover_color": ("#059669", "#047857")}
+}

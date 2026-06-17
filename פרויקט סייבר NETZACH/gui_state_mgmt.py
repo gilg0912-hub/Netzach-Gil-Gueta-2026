@@ -35,6 +35,13 @@ class GUI_State:
             StateKey.GROUPS_UI_SIGNAL: None,
             StateKey.MESSAGES_UI_SIGNAL: None,
             StateKey.RELEASE_BTNS: 'normal',
+            StateKey.ACTIVE_CALL_ROOM_ID: None,
+            StateKey.ACTIVE_MEDIA_KEY: None,
+            StateKey.CALL_ESTABLISHED: None,
+            StateKey.PENDING_UDP_TOKEN: None,
+            StateKey.PUBLIC_CALL_KEY: None,
+            StateKey.PRIVATE_CALL_KEY: None,
+            StateKey.ROOM_VIDEO_STATUS: False,
             }
         # יצירת רשימת מאזינים לכל מפתח
         self.listeners = {k: [] for k in self.state.keys()}

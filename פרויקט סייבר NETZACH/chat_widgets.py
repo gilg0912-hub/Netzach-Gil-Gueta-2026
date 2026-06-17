@@ -1,46 +1,22 @@
 import customtkinter as ctk
 import time
 import os
+import queue
 import threading
 import tkinter.filedialog as filedialog
 
 import pythoncom
 import win32com.client
 
+import cv2
+import numpy as np
+from PIL import Image
+from network import MediaCommunicator
+
 from ui_components import TopicCard, RequiredEntry
 from app_constants import StateKey, Contract, UserRole, MsgType
-"""
-    def _intercept_scroll_set(self, first, last):
-        # remarks: הפעלת פונקציית הגלילה המקורית של רכיב ה-UI כדי לשמור על תצוגה תקינה
-        self._original_scrollbar_set(first, last)
+from CHAT_config import VIDEO_BTN_STATES
 
-        # remarks: עצירת הפעולה אם הלקוח לא מחובר לשרת (אין טעם לנסות למשוך נתונים)
-        if not self.gui_state.get_state(StateKey.CONNECTED):
-            return
-
-        # remarks: מניעת בקשות כפולות - אם כבר מתבצעת טעינת נתונים ברקע, הפונקציה עוצרת כאן
-        if self._is_loading:
-            return
-
-        # remarks: המרת פרמטרי המיקום (תחילת וסוף אזור הגלילה המוצג) לערכים עשרוניים לצורך חישוב
-        current_top = float(first)
-        current_bottom = float(last)
-
-        # remarks: בדיקת מצב בו כל התוכן נכנס במסך אחד (אין באמת גלילה פעילה), ולכן אין מה לטעון
-        if current_top == 0.0 and current_bottom == 1.0:
-            return
-
-        # remarks: זיהוי גלילה לקצה העליון (5% עליונים) - טריגר לטעינת היסטוריה ישנה ("גלילה אינסופית" למעלה)
-        if current_top <= 0.05 and self.on_top_reach is not None:
-            self._is_loading = True
-            self.on_top_reach()
-
-        # remarks: זיהוי גלילה לקצה התחתון (5% תחתונים) - טריגר לטעינת הודעות או נתונים חדשים
-        elif current_bottom >= 0.95 and self.on_bottom_reach is not None:
-            self._is_loading = True
-            self.on_bottom_reach()
-
-"""
 class RoomProfileWindow(ctk.CTkToplevel):
     def __init__(self, parent, room_data):
         print(room_data.is_open)
@@ -87,8 +63,10 @@ class RoomProfileWindow(ctk.CTkToplevel):
                       width=200, height=45, corner_radius=12,
                       fg_color="#38BDF8", text_color="#0F172A", font=("Heebo", 16, "bold")).pack(pady=(0, 20))
 
+
 class ChatRoom:
-    def __init__(self, room_id, category, total_participants, participants, display_name, invite_code, allowed_type, is_open, summary=None, created_by=None, created_at=None, **kwargs):
+    def __init__(self, room_id, category, total_participants, participants, display_name, invite_code, allowed_type,
+                 is_open, summary=None, created_by=None, created_at=None, is_call_active=False, **kwargs):
         self.room_id = str(room_id)
         self.category = category
         self.allowed_type = allowed_type
@@ -97,11 +75,16 @@ class ChatRoom:
         self.is_open = is_open
         self.created_by = created_by
         self.created_at = created_at
+
+        # חברי הקבוצה (התכתבות)
         self.participants = participants
         self.total_participants = total_participants
-        self.summary = summary
-        print(self.summary, 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA')
 
+        # משתתפי השיחה הפעילה (וידאו)
+        self.is_call_active = is_call_active
+        self.call_participants = {}
+
+        self.summary = summary
         self.history_ended = False
 
     @classmethod
@@ -110,17 +93,36 @@ class ChatRoom:
             return None
         return cls(
             room_id=data.get(Contract.ROOM_ID),
-            category= data.get(Contract.CATEGORY),
+            category=data.get(Contract.CATEGORY),
             allowed_type=data.get(Contract.TYPE),
             invite_code=data.get(Contract.INVITE_CODE),
             is_open=data.get(Contract.IS_OPEN, True),
             created_by=data.get(Contract.CREATED_BY),
             created_at=data.get(Contract.CREATED_AT),
-            display_name = data.get(Contract.DISPLAY_NAME),
-            participants = data.get(Contract.PARTICIPANTS),
-            total_participants = data.get(Contract.TOTAL_PARTICIPANTS),
-            summary = data.get(Contract.SUMMARY)
+            display_name=data.get(Contract.DISPLAY_NAME),
+            participants=data.get(Contract.PARTICIPANTS, []),
+            total_participants=data.get(Contract.TOTAL_PARTICIPANTS, 0),
+            summary=data.get(Contract.SUMMARY),
+            is_call_active=data.get(Contract.IS_CALL_ACTIVE, False)
         )
+
+    def to_dict(self, data: dict):
+        if not data:
+            return None
+        return {
+            Contract.ROOM_ID : self.room_id,
+            Contract.CATEGORY: self.category,
+            Contract.ALLOWED_TYPE: self.allowed_type,
+            Contract.INVITE_CODE: self.invite_code,
+            Contract.IS_OPEN: self.is_open,
+            Contract.CREATED_BY: self.created_by,
+            Contract.CREATED_AT: self.created_by,
+            Contract.DISPLAY_NAME: self.display_name,
+            Contract.PARTICIPANTS: self.participants,
+            Contract.TOTAL_PARTICIPANTS: self.total_participants,
+            Contract.SUMMARY: self.summary,
+            Contract.IS_CALL_ACTIVE: self.is_call_active,
+        }
 
 class BaseScreen(ctk.CTkFrame):
     def __init__(self, parent, **kwargs):
@@ -400,22 +402,241 @@ class ChatArea(ScrollScreen):
             frame.destroy()
         self.msg_frames.clear()
 
-class ChatScreen(BaseScreen):
-    def __init__(self, parent, gui_state, chat_service):  # הוספנו את chat_service כדי לאפשר שליחה
-        super().__init__(parent, fg_color='transparent', corner_radius=20)
 
-        self.gui_state = gui_state
-        self.chat_service = chat_service
-        self.chat_header = ChatHeader(self, gui_state, corner_radius=0)
+class ChatScreen(BaseScreen):
+    def __init__(self, parent, gui_state, chat_service):
+        super().__init__(parent, fg_color='transparent', corner_radius=20)
+        self.gui_state, self.chat_service = gui_state, chat_service
+        self.grid_columnconfigure(0, weight=0)
+        self.grid_columnconfigure(1, weight=1)
+        self.grid_rowconfigure(0, weight=1)
+
+        self.chat_container = ctk.CTkFrame(self, fg_color='transparent')
+        self.chat_container.grid(row=0, column=1, sticky="nsew", padx=5, pady=5)
+
+        self.chat_header = ChatHeader(self.chat_container, gui_state, chat_service, corner_radius=0)
         self.chat_header.pack(fill='x', side='top', padx=5, pady=5)
 
-        # 1. אזור ההודעות הנגלל (תופס את כל המרכז)
-        self.chat_area = ChatArea(self, gui_state, self.chat_service, corner_radius=0)
+        self.chat_area = ChatArea(self.chat_container, gui_state, self.chat_service, corner_radius=0)
         self.chat_area.pack(fill="both", expand=True, pady=(0, 5), padx=5)
 
-        # 2. 🟢 פאנל כתיבה ושליחה קבוע שנשאר תמיד בתחתית המסך
-        self.chat_input = ChatInputFrame(self, chat_service, gui_state)
+        self.chat_input = ChatInputFrame(self.chat_container, chat_service, gui_state)
         self.chat_input.pack(fill='x', side='bottom', padx=5, pady=5)
+
+        self.video_container = ctk.CTkFrame(self, fg_color=("#1E293B", "#0F172A"), corner_radius=15)
+        self.active_video_widget = None
+
+        self.gui_state.register(StateKey.CALL_ESTABLISHED, self._toggle_video_panel)
+
+    def _toggle_video_panel(self, is_established):
+        if is_established:
+            self.grid_columnconfigure(0, weight=1)
+            self.video_container.grid(row=0, column=0, sticky="nsew", padx=(5, 0), pady=5)
+            if not self.active_video_widget:
+                self.active_video_widget = VideoCallPanel(
+                    self.video_container,
+                    self.gui_state.get_state(StateKey.ACTIVE_CALL_ROOM_ID),
+                    self.gui_state.get_state(StateKey.PENDING_UDP_TOKEN),
+                    self.gui_state, self.chat_service
+                )
+
+                self.active_video_widget.pack(fill="both", expand=True)
+        else:
+            if self.active_video_widget:
+                self.active_video_widget.destroy()
+                self.active_video_widget = None
+            self.video_container.grid_forget()
+            self.grid_columnconfigure(0, weight=0)
+
+
+class VideoCallPanel(ctk.CTkFrame):
+    def __init__(self, parent, room_id, udp_token, gui_state, chat_service, **kwargs):
+        super().__init__(parent, fg_color="transparent", **kwargs)
+
+        self.room_id = room_id
+        self.udp_token = udp_token
+        self.gui_state = gui_state
+        self.chat_service = chat_service
+        self.is_running = True
+
+        # הגדרות תצוגה
+        self.target_width, self.target_height = 320, 240
+        self.remote_videos = {}
+        self.remote_last_seen = {}
+        self.last_total_rows = 0
+        self.last_total_cols = 0
+
+        # תורים לניהול פריימים (Thread-Safe)
+        self.local_frame_queue = queue.Queue(maxsize=1)  # תור קטן למניעת Lag
+        self.remote_frame_queue = queue.Queue(maxsize=15)
+
+        self._setup_ui()
+
+        # אתחול חומרה ורשת
+        self.cap = cv2.VideoCapture(0)
+
+        # הערה: וודא שה-MediaCommunicator שלך מוגדר נכון
+        self.media_communicator = MediaCommunicator(
+            server_ip="127.0.0.1", server_udp_port=8821, room_id=room_id,
+            frame_queue=self.remote_frame_queue, udp_token=udp_token,
+            my_p_id=self.gui_state.get_state(StateKey.PUBLIC_ID)
+        )
+        self.media_communicator.start()
+
+        # התחלת העבודה ברקע
+        self.worker_thread = threading.Thread(target=self._camera_worker, daemon=True)
+        self.worker_thread.start()
+
+        # הפעלת לופים לעדכון ה-UI
+        self._update_local_ui_loop()
+        self._poll_remote_video()
+
+    def _setup_ui(self):
+        self.videos_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.videos_frame.pack(fill="both", expand=True, pady=10)
+
+        self.my_video_container = ctk.CTkFrame(self.videos_frame, fg_color="#1E293B", corner_radius=10, border_width=1,
+                                               border_color="#334155")
+        self.my_video_label = ctk.CTkLabel(self.my_video_container, text="מתחבר...")
+        self.my_video_label.pack(fill="both", expand=True, padx=2, pady=2)
+
+        ctk.CTkLabel(self.my_video_container, text="אני", font=("Heebo", 12, "bold"), text_color="#38BDF8").pack(
+            side="bottom", fill="x", pady=2)
+
+        self.disconnect_btn = ctk.CTkButton(self, text="📞 נתק שיחה", fg_color="#ef4444", hover_color="#dc2626",
+                                            font=("Heebo", 14, "bold"), command=self._disconnect)
+        self.disconnect_btn.pack(side="bottom", pady=20)
+
+        self._rearrange_videos()
+
+    def _update_local_ui_loop(self):
+        """ עדכון UI מהתור """
+        if not self.is_running: return
+        try:
+            img = self.local_frame_queue.get_nowait()
+            imgtk = ctk.CTkImage(light_image=img, size=(self.target_width, self.target_height))
+            self.my_video_label.configure(image=imgtk, text="")
+        except queue.Empty:
+            pass
+        self.after(33, self._update_local_ui_loop)  # ~30 FPS
+
+    def _disconnect(self):
+        if self.cap.isOpened(): self.cap.release()
+        if self.media_communicator: self.media_communicator.stop()
+        self.chat_service.leave_video_call(self.room_id)
+        self.destroy()
+
+    def destroy(self):
+        self.is_running = False
+        super().destroy()
+
+    def _rearrange_videos(self):
+        active = [self.my_video_container] + [item["container"] for item in self.remote_videos.values()]
+        num = len(active)
+        if num == 0: return
+        for w in active: w.grid_forget()
+        max_cols = 2 if num <= 4 else 3
+        for c in range(self.last_total_cols): self.videos_frame.grid_columnconfigure(c, weight=0)
+        for r in range(self.last_total_rows): self.videos_frame.grid_rowconfigure(r, weight=0)
+        for i, w in enumerate(active): w.grid(row=i // max_cols, column=i % max_cols, padx=6, pady=6, sticky="nsew")
+        rows, cols = (num - 1) // max_cols + 1, min(num, max_cols)
+        w_curr = self.winfo_width() if self.winfo_width() > 1 else 640
+        self.target_width = max(160, min((w_curr // cols) - 12, 540))
+        self.target_height = int(self.target_width * 0.75)
+        for r in range(rows): self.videos_frame.grid_rowconfigure(r, weight=1)
+        for c in range(cols): self.videos_frame.grid_columnconfigure(c, weight=1)
+        self.last_total_rows, self.last_total_cols = rows, cols
+
+    def _camera_worker(self):
+        """ 🛑 תיקון שגיאה 2: אתחול המצלמה מתבצע אך ורק בתוך הת'רד שקורא ממנה """
+        print("[Camera Thread] Initializing camera from background thread...")
+        cap = cv2.VideoCapture(0)
+
+        # הגדרת רזולוציה אופטימלית בחומרה כדי לחסוך במשאבי CPU ורשת
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
+
+        while self.is_running:
+            ret, frame = cap.read()
+            if not ret:
+                time.sleep(0.03)
+                continue
+
+            # 1. עיבוד פריים מקומי לתצוגה עצמית ב-GUI
+            display_frame = cv2.resize(frame, (self.target_width, self.target_height))
+            cv2image = cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)
+            img = Image.fromarray(cv2image)
+
+            if not self.local_frame_queue.full():
+                self.local_frame_queue.put(img)
+
+            # 2. דחיסה קלה ושליחה לרשת (איכות 40 שומרת על פאקטה קטנה מ-MTU ומונעת איבוד UDP)
+            success, buffer = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 40])
+            if success and self.media_communicator:
+                self.media_communicator.send_media(buffer.tobytes())
+
+            # הגבלת הלולאה ל-~30 FPS יציבים כדי למנוע העמסת המעבד
+            time.sleep(0.03)
+
+        # שחרור המצלמה בצורה בטוחה באותו הת'רד בו היא נפתחה
+        cap.release()
+        print("[Camera Thread] Camera released cleanly.")
+
+    def _update_remote_video_frame(self, s_id, decrypted_data):
+        """ עדכון וידאו של משתמשים אחרים מהרשת """
+        try:
+            nparr = np.frombuffer(decrypted_data, np.uint8)
+            frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            if frame is not None:
+                # התאמת גודל הפריים המרוחק לחלון ה-GUI
+                frame_resized = cv2.resize(frame, (self.target_width, self.target_height))
+                img = Image.fromarray(cv2.cvtColor(frame_resized, cv2.COLOR_BGR2RGB))
+                imgtk = ctk.CTkImage(light_image=img, size=(self.target_width, self.target_height))
+
+                if s_id not in self.remote_videos:
+                    container = ctk.CTkFrame(self.videos_frame, fg_color="#1E293B", corner_radius=10, border_width=1,
+                                             border_color="#475569")
+                    v_label = ctk.CTkLabel(container, text="")
+                    v_label.pack(fill="both", expand=True, padx=2, pady=2)
+
+                    name = "משתמש מרוחק"
+                    all_rooms = self.gui_state.get_state(StateKey.SYNC_ROOMS) or []
+                    curr = next((r for r in all_rooms if str(r.room_id) == str(self.room_id)), None)
+                    if curr and curr.participants:
+                        name = curr.participants.get(s_id, name)
+
+                    ctk.CTkLabel(container, text=name, font=("Heebo", 12), text_color="#94A3B8").pack(side="bottom",
+                                                                                                      fill="x", pady=2)
+                    self.remote_videos[s_id] = {"container": container, "video_label": v_label}
+                    self._rearrange_videos()
+
+                self.remote_videos[s_id]["video_label"].configure(image=imgtk, text="")
+        except Exception as e:
+            print(f"[Remote Video UI Error] {e}")
+
+    def _poll_remote_video(self):
+        if not self.is_running: return
+        frames, now = {}, time.time()
+        try:
+            while True:
+                s_id, data = self.remote_frame_queue.get_nowait()
+                frames[s_id] = data
+        except queue.Empty:
+            pass
+        for s_id, data in frames.items():
+            self.remote_last_seen[s_id] = now
+            self._update_remote_video_frame(s_id, data)
+        stale = [s_id for s_id, t in self.remote_last_seen.items() if now - t > 4.0]
+        if stale:
+            for s_id in stale:
+                try:
+                    self.remote_videos[s_id]["container"].destroy()
+                except:
+                    pass
+                del self.remote_videos[s_id], self.remote_last_seen[s_id]
+            self._rearrange_videos()
+        self.after(30, self._poll_remote_video)
+
 
 class ChatInputFrame(ctk.CTkFrame):
     def __init__(self, parent, chat_service, gui_state, **kwargs):
@@ -461,12 +682,14 @@ class ChatInputFrame(ctk.CTkFrame):
             self.chat_service.send_message(room_id=current_room, content=content)
 
 class ChatHeader(ctk.CTkFrame):
-    def __init__(self, parent, gui_state, **kwargs):
+    def __init__(self, parent, gui_state, chat_service, **kwargs):
         kwargs.setdefault('fg_color', ('#e2e8f0', '#0f172a'))
         kwargs.setdefault('height', 60)
         super().__init__(parent, **kwargs)
 
         self.gui_state = gui_state
+        self.chat_service = chat_service
+
         self.pack_propagate(False)
         self.current_room_obj = None
 
@@ -482,8 +705,19 @@ class ChatHeader(ctk.CTkFrame):
             command=self._open_room_profile
         )
 
+        self.video_btn = ctk.CTkButton(
+            self, text="🎥 התחל שיחה", font=("Heebo", 12, "bold"),
+            width=100, fg_color=('#10b981', '#059669'), hover_color=('#059669', '#047857'),
+            command=self._initiate_video_call
+        )
+
         self.gui_state.register(StateKey.CURRENT_ROOM_ID, self._on_room_changed)
         self.gui_state.register(StateKey.ROOMS_UI_SIGNAL, self._on_room_updated)
+        self.gui_state.register(StateKey.ROOM_VIDEO_STATUS, self._on_video_status_changed)
+
+    def _on_video_status_changed(self, updated_room_id):
+        if self.current_room_obj and str(self.current_room_obj.room_id) == str(updated_room_id):
+            self.after(0, lambda: self._update_labels(self.current_room_obj))
 
     def _open_room_profile(self):
         if self.current_room_obj:
@@ -495,6 +729,7 @@ class ChatHeader(ctk.CTkFrame):
             self.status_label.configure(text="")
             self.current_room_obj = None
             self.info_button.pack_forget()
+            self.video_btn.pack_forget()
             return
 
         all_rooms = self.gui_state.get_state(StateKey.SYNC_ROOMS) or []
@@ -504,6 +739,7 @@ class ChatHeader(ctk.CTkFrame):
                 self.current_room_obj = room_obj
                 self._update_labels(room_obj)
                 self.info_button.pack(side="left", padx=20, pady=15)
+                self.video_btn.pack(side="left", padx=20, pady=15)
                 return
 
     def _on_room_updated(self, signal_data):
@@ -530,6 +766,34 @@ class ChatHeader(ctk.CTkFrame):
         status_text = "🟢 פתוח לשיחה" if is_open else "🔴 החדר נעול"
         status_color = ("#16a34a", "#22c55e") if is_open else ("#dc2626", "#ef4444")
         self.status_label.configure(text=status_text, text_color=status_color)
+
+        active_call_room = self.gui_state.get_state(StateKey.ACTIVE_CALL_ROOM_ID)
+
+        # 1. חישוב המצב הבוליאני
+        is_busy_elsewhere = active_call_room and str(active_call_room) != str(room_obj.room_id)
+        has_active_call = bool(room_obj.is_call_active)
+
+        # 2. קביעת מפתח המצב
+        state_key = "BUSY" if is_busy_elsewhere else ("JOIN" if has_active_call else "START")
+        print(
+            f"[DEBUG] Room ID: {room_obj.room_id}, Call Active: {room_obj.is_call_active}, Active Call Room: {active_call_room}")
+        print("state_key:", state_key)
+
+        # 3. הזרקת העיצוב ישירות מקובץ הקונפיגורציה
+        self.video_btn.configure(**VIDEO_BTN_STATES[state_key])
+
+    def _initiate_video_call(self):
+        if not self.current_room_obj:
+            return
+
+        # שליפת הנתונים מהאובייקט ברגע הלחיצה בדיוק
+        room_id = self.current_room_obj.room_id
+
+        # הניתוב העסקי: אם יש מפתח - מצטרפים, אם אין - יוזמים
+        if self.current_room_obj.is_call_active:
+            self.chat_service.join_video_call(room_id)
+        else:
+            self.chat_service.start_video_call(room_id)
 
 class CreateScreen(BaseScreen):
     def __init__(self, parent, gui_state, chat_service):
@@ -1038,7 +1302,7 @@ class UserDetailsScreen(BaseScreen):
                 ws = wb.Sheets(1)
 
                 users_to_add = []
-                row = 2  
+                row = 2
 
                 while ws.Cells(row, 1).Value is not None:
                     identity = str(ws.Cells(row, 1).Value).strip()

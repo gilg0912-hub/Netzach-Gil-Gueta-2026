@@ -9,10 +9,13 @@ import os
 from Crypto.PublicKey import RSA
 
 from AIHandler import AIHandler
+from UDPMediaServer import UDPMediaServer
 import hashlib
 import DATABASE
+
 from EmailService import EmailService
 from ChatService import *
+
 from Protocol import *
 import time
 import threading
@@ -45,15 +48,16 @@ class Server:
 
         #self.start_ai_service()
 
-        self.chat_manager = ChatManager(self.db, self.send_to_client)
+        self.chat_manager = ChatManager(self.db, self.send_to_client, self.send_to_user)
 
         self.clients={}
         self.online_users= {}
+        self.routing_lock = threading.Lock()
 
         self.traffic_monitor = TrafficMonitor()
         self.msg_dispatcher = MsgDispatcher(self.send_to_client,  self.traffic_monitor)
 
-        self.auth_handler= AuthHandler(self.db, self.email_service, self.send_to_client, self.on_user_authenticated, self.traffic_monitor)
+        self.auth_handler= AuthHandler(self.db, self.email_service, self.send_to_client, self.on_user_authenticated, self.traffic_monitor, self.on_user_logout)
 
         self._handlers={
             MsgType.LOGIN: self.auth_handler.process_login,
@@ -69,8 +73,13 @@ class Server:
             MsgType.GET_OLDER_TOPICS: self.chat_manager.handle_older_topics,
             MsgType.GET_OLDER_MESSAGES: self.chat_manager.handle_older_messages,
             MsgType.GET_OLDER_GROUPS: self.chat_manager.handle_older_groups,
-
+            MsgType.LOGOUT: self.auth_handler.process_logout,
+            MsgType.START_CALL: self.chat_manager.handle_start_call,
+            MsgType.JOIN_CALL: self.chat_manager.handle_join_call,
+            MsgType.LEAVE_CALL: self.chat_manager.handle_leave_call,
+            MsgType.UPDATE_ROOM_MEDIA_KEY: self.chat_manager.handle_update_room_media_keys,
         }
+
         self.setup_handlers()
 
         self.logic_queue = queue.Queue()
@@ -81,6 +90,10 @@ class Server:
             t = threading.Thread(target=self._logic_worker_loop, daemon=True, name=f"Worker-{i + 1}")
             t.start()
             self.workers.append(t)
+
+        self.udp_server = UDPMediaServer(host= self.HOST, port=8821)
+        self.udp_server.set_auth_validator(self.chat_manager.validate_udp_join)
+        self.udp_server.start()
 
     def _logic_worker_loop(self):
         while True:
@@ -298,6 +311,17 @@ class Server:
         if sock in self.clients:
             self.clients[sock].send_queue.put(data)
 
+    def send_to_user(self, p_id, data):
+        with self.routing_lock:
+            active_sockets = list(self.online_users.get(p_id, []))
+
+        for sock in active_sockets:
+            self.send_to_client(sock, data)
+
+    def get_online_sockets(self, p_id):
+        with self.routing_lock:
+            return list(self.online_users.get(p_id, []))
+
     def handle_disconnect(self, sock, error=None):
         client = self.clients.pop(sock, None)
 
@@ -305,11 +329,15 @@ class Server:
             return
 
         addr = client.addr
-
         p_id = client.p_id
-        if p_id and p_id in self.online_users:
-            print(f"[Routing] Removing {p_id} from online_users")
-            del self.online_users[p_id]
+
+        if p_id:
+            with self.routing_lock:
+                if sock in self.online_users[p_id]:
+                    self.online_users[p_id].remove(sock)
+                    print(f"[Routing] Removed socket for {p_id}. Remaining active sessions: {len(self.online_users[p_id])}")
+                if not self.online_users[p_id]:
+                    del self.online_users[p_id]
 
         print(f"Client {addr} disconnected. Reason: {error if error else 'Cleanly'}")
 
@@ -319,9 +347,26 @@ class Server:
         except Exception:
             pass
 
+    def on_user_logout(self, p_id):
+        with self.routing_lock:
+            if p_id in self.online_users:
+                print(f"[Routing] Removing {p_id} from online_users due to explicit logout.")
+
+                for sock in self.online_users[p_id]:
+                    client = self.clients.get(sock)
+                    if client:
+                        client.pending_disconnect = True
+
+                del self.online_users[p_id]
+
     def on_user_authenticated(self, p_id, sock):
-        self.online_users[p_id] = sock
-        print(f"[Routing] User {p_id} registered.")
+        with self.routing_lock:
+            if p_id not in self.online_users:
+                self.online_users[p_id] = []
+
+            if sock not in self.online_users[p_id]:
+                self.online_users[p_id].append(sock)
+
         client = self.clients.get(sock)
 
         if client:
@@ -339,6 +384,7 @@ class Server:
 
             # 4. שליחה סופית של המידע המינימלי והנחוץ ללקוח לצורך רינדור מסך הבית/קבוצות
             self.send_to_client(client.sock, sync_msg)
+
 
     def close(self):
         print("\n[Server] Initiating graceful shutdown...")
@@ -718,17 +764,29 @@ class Client:
         self.p_id = user_record.get(Contract.PUBLIC_ID)
         self.display_name = user_record.get(Contract.DISPLAY_NAME)
 
+    def reset_auth(self):
+        """מנקה את הזהות הלוגית של המשתמש ומשאירה את ערוץ ההצפנה פתוח"""
+        self.authenticated = False
+        self.role = None
+        self.is_admin = None
+        self.user_info = {}
+        self.display_name = None
+        self.p_id = None
+        self.auth_bundle = None
+        self.db_id = None
+
     def __repr__(self):
         return f"<Client {self.addr} | Authenticated: {self.authenticated}>"
 
 class AuthHandler:
 
-    def __init__(self, db, email_service, send_func, auth_func, traffic_monitor):
+    def __init__(self, db, email_service, send_func, auth_func, traffic_monitor, on_logout_callback):
         self.db = db
         self.email_service = email_service
         self.send= send_func
         self.on_auth_success_callback = auth_func
         self.traffic_monitor = traffic_monitor
+        self.on_logout_callback = on_logout_callback
 
         self._auth_finalize_actions = {
             MsgType.SIGNUP: self._finalize_signup,
@@ -958,6 +1016,23 @@ class AuthHandler:
         else:
             return ResponseFactory.error(MsgType.AUTH_UPLOAD, MsgCodes.DATABASE_ERROR)
 
+    def process_logout(self, client, payload):
+        if not client.authenticated:
+            return None
+
+        print(f"[AuthHandler] Processing secure logout for {client.display_name} ({client.p_id})")
+
+        # 1. ביטול הטוקן בבסיס הנתונים (מונע שימוש חוזר בטוקן שנגנב)
+        if client.p_id:
+            self.db.update_user_token(client.p_id, None)
+
+        if self.on_auth_success_callback:
+            self.on_logout_callback(client.p_id)
+
+        # 3. איפוס האובייקט בעזרת הפונקציה שיצרנו
+        client.reset_auth()
+
+        return None
 
 server = Server()
 try:
