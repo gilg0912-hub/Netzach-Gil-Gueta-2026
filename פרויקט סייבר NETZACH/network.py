@@ -260,13 +260,6 @@ class MediaCommunicator(threading.Thread):
         self.play_thread = None
 
     def update_media_key(self, new_media_key):
-        """
-        מתודה ציבורית בטוחה (Thread-Safe) לעדכון מפתח ההצפנה בזמן ריצה.
-        תקרא מתוך ת'רד ה-TCP (כשמתקבל סיגנל מהשרת) או מרמת ה-Service.
-        """
-        if isinstance(new_media_key, str):
-            new_media_key = new_media_key.encode('utf-8')
-
         with self.cipher_lock:
             self.cipher = Fernet(new_media_key)
         print(f"[Media Lock] Media cipher rotated successfully for room {self.room_id}")
@@ -310,30 +303,37 @@ class MediaCommunicator(threading.Thread):
                 pkt_type, r_id, sender_id, encrypted_payload = MediaProtocol.unpack(data)
 
                 if pkt_type == MediaProtocol.TYPE_VIDEO:
-                    # פענוח בטוח בתוך ת'רד התקשורת
-                    decrypted_frame = current_cipher.decrypt(encrypted_payload)
                     try:
+                        decrypted_frame = current_cipher.decrypt(encrypted_payload)
                         self.frame_queue.put((sender_id, decrypted_frame), block=False)
                     except queue.Full:
-                        pass
+                        print('queue is full')
+                    except Exception as e:
+                        print(f"[CRITICAL Decrypt Error] {e}")
+                        print(f"[Media Error] Video frame drop (decryption failed): {e}")
+
 
                 elif pkt_type == MediaProtocol.TYPE_AUDIO:
-                    decrypted_audio = current_cipher.decrypt(encrypted_payload)
                     try:
+                        decrypted_audio = current_cipher.decrypt(encrypted_payload)
                         self.audio_queue.put((sender_id, decrypted_audio), block=False)
                     except queue.Full:
+                        pass
+                    except Exception as e:
                         pass
 
             except socket.timeout:
                 continue
             except Exception as e:
-                # מניעת קריסה חרישית וספאם במקרה של שגיאת סוקט
                 time.sleep(0.01)
 
     def send_media(self, raw_bytes):
         if self.is_active.is_set():
             try:
                 current_cipher = self._get_cipher()
+                if not current_cipher:
+                    print("Cipher not initialized yet!")
+                    return
                 encrypted_payload = current_cipher.encrypt(raw_bytes)
                 video_packet = MediaProtocol.pack(
                     pkt_type=MediaProtocol.TYPE_VIDEO,
@@ -341,8 +341,10 @@ class MediaCommunicator(threading.Thread):
                     sender_id=self.my_p_id,
                     payload=encrypted_payload
                 )
+
                 self.udp_sock.sendto(video_packet, self.server_address)
-            except Exception:
+            except Exception as e:
+                print(e, 'AAAAAAAAAAAA')
                 pass
 
     def _record_audio_loop(self):

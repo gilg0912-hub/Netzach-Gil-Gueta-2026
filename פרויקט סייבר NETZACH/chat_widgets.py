@@ -17,6 +17,10 @@ from ui_components import TopicCard, RequiredEntry
 from app_constants import StateKey, Contract, UserRole, MsgType
 from CHAT_config import VIDEO_BTN_STATES
 
+from cryptography.hazmat.primitives.asymmetric import padding
+from cryptography.hazmat.primitives import serialization, hashes
+import base64
+
 class RoomProfileWindow(ctk.CTkToplevel):
     def __init__(self, parent, room_data):
         print(room_data.is_open)
@@ -426,7 +430,7 @@ class ChatScreen(BaseScreen):
         self.video_container = ctk.CTkFrame(self, fg_color=("#1E293B", "#0F172A"), corner_radius=15)
         self.active_video_widget = None
 
-        self.gui_state.register(StateKey.CALL_ESTABLISHED, self._toggle_video_panel)
+        self.gui_state.register(StateKey.OPEN_CAMERA, self._toggle_video_panel)
 
     def _toggle_video_panel(self, is_established):
         if is_established:
@@ -435,8 +439,6 @@ class ChatScreen(BaseScreen):
             if not self.active_video_widget:
                 self.active_video_widget = VideoCallPanel(
                     self.video_container,
-                    self.gui_state.get_state(StateKey.ACTIVE_CALL_ROOM_ID),
-                    self.gui_state.get_state(StateKey.PENDING_UDP_TOKEN),
                     self.gui_state, self.chat_service
                 )
 
@@ -450,13 +452,12 @@ class ChatScreen(BaseScreen):
 
 
 class VideoCallPanel(ctk.CTkFrame):
-    def __init__(self, parent, room_id, udp_token, gui_state, chat_service, **kwargs):
+    def __init__(self, parent, gui_state, chat_service, **kwargs):
         super().__init__(parent, fg_color="transparent", **kwargs)
 
-        self.room_id = room_id
-        self.udp_token = udp_token
         self.gui_state = gui_state
         self.chat_service = chat_service
+        self.media_communicator = None
         self.is_running = True
 
         # הגדרות תצוגה
@@ -472,16 +473,6 @@ class VideoCallPanel(ctk.CTkFrame):
 
         self._setup_ui()
 
-        # אתחול חומרה ורשת
-        self.cap = cv2.VideoCapture(0)
-
-        # הערה: וודא שה-MediaCommunicator שלך מוגדר נכון
-        self.media_communicator = MediaCommunicator(
-            server_ip="127.0.0.1", server_udp_port=8821, room_id=room_id,
-            frame_queue=self.remote_frame_queue, udp_token=udp_token,
-            my_p_id=self.gui_state.get_state(StateKey.PUBLIC_ID)
-        )
-        self.media_communicator.start()
 
         # התחלת העבודה ברקע
         self.worker_thread = threading.Thread(target=self._camera_worker, daemon=True)
@@ -490,6 +481,22 @@ class VideoCallPanel(ctk.CTkFrame):
         # הפעלת לופים לעדכון ה-UI
         self._update_local_ui_loop()
         self._poll_remote_video()
+
+        self.gui_state.register(StateKey.CALL_ESTABLISHED, self._prepare_camera)
+        self.gui_state.register(StateKey.ACTIVE_MEDIA_KEY, self._update_call_key)
+
+    def _update_call_key(self, new_media_key):
+       if new_media_key and self.media_communicator:
+           self.media_communicator.update_media_key(new_media_key)
+
+    def _prepare_camera(self, is_established):
+        if is_established:
+            self.media_communicator = MediaCommunicator(
+                server_ip="127.0.0.1", server_udp_port=8821, room_id=self.gui_state.get_state(StateKey.ACTIVE_CALL_ROOM_ID),
+                frame_queue=self.remote_frame_queue, udp_token=self.gui_state.get_state(StateKey.PENDING_UDP_TOKEN),
+                my_p_id=self.gui_state.get_state(StateKey.PUBLIC_ID)
+            )
+            self.media_communicator.start()
 
     def _setup_ui(self):
         self.videos_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -521,9 +528,9 @@ class VideoCallPanel(ctk.CTkFrame):
         self.after(33, self._update_local_ui_loop)  # ~30 FPS
 
     def _disconnect(self):
-        if self.cap.isOpened(): self.cap.release()
-        if self.media_communicator: self.media_communicator.stop()
-        self.chat_service.leave_video_call(self.room_id)
+        if self.media_communicator:
+            self.media_communicator.stop()
+        self.chat_service.leave_video_call(self.gui_state.get_state(StateKey.ACTIVE_CALL_ROOM_ID))
         self.destroy()
 
     def destroy(self):
@@ -591,6 +598,8 @@ class VideoCallPanel(ctk.CTkFrame):
                 # התאמת גודל הפריים המרוחק לחלון ה-GUI
                 frame_resized = cv2.resize(frame, (self.target_width, self.target_height))
                 img = Image.fromarray(cv2.cvtColor(frame_resized, cv2.COLOR_BGR2RGB))
+                print(img)
+
                 imgtk = ctk.CTkImage(light_image=img, size=(self.target_width, self.target_height))
 
                 if s_id not in self.remote_videos:
@@ -601,7 +610,7 @@ class VideoCallPanel(ctk.CTkFrame):
 
                     name = "משתמש מרוחק"
                     all_rooms = self.gui_state.get_state(StateKey.SYNC_ROOMS) or []
-                    curr = next((r for r in all_rooms if str(r.room_id) == str(self.room_id)), None)
+                    curr = next((r for r in all_rooms if str(r.room_id) == str(self.gui_state.get_state(StateKey.ACTIVE_CALL_ROOM_ID))), None)
                     if curr and curr.participants:
                         name = curr.participants.get(s_id, name)
 
@@ -620,9 +629,11 @@ class VideoCallPanel(ctk.CTkFrame):
         try:
             while True:
                 s_id, data = self.remote_frame_queue.get_nowait()
+                print(f"[DEBUG] Got remote frame from {s_id}, size={len(data)}")  # זמני
                 frames[s_id] = data
         except queue.Empty:
             pass
+        ...
         for s_id, data in frames.items():
             self.remote_last_seen[s_id] = now
             self._update_remote_video_frame(s_id, data)
@@ -717,7 +728,7 @@ class ChatHeader(ctk.CTkFrame):
 
     def _on_video_status_changed(self, updated_room_id):
         if self.current_room_obj and str(self.current_room_obj.room_id) == str(updated_room_id):
-            self.after(0, lambda: self._update_labels(self.current_room_obj))
+            self._update_labels(self.current_room_obj)
 
     def _open_room_profile(self):
         if self.current_room_obj:

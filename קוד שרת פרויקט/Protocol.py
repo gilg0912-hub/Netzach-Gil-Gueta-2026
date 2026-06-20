@@ -78,6 +78,7 @@ class Contract(StrEnum):
 
     CALL_STATE = 'call_state'
     START_CALL = 'start_call'
+    DISTRIBUTOR_ID = 'distributor_id'
     PUBLIC_CALL_KEY = 'public_call_key'
     IS_CALL_ACTIVE = 'is_call_active'
     MEDIA_KEY = 'media_key'

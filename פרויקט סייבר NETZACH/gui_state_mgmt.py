@@ -37,6 +37,7 @@ class GUI_State:
             StateKey.RELEASE_BTNS: 'normal',
             StateKey.ACTIVE_CALL_ROOM_ID: None,
             StateKey.ACTIVE_MEDIA_KEY: None,
+            StateKey.OPEN_CAMERA: False,
             StateKey.CALL_ESTABLISHED: None,
             StateKey.PENDING_UDP_TOKEN: None,
             StateKey.PUBLIC_CALL_KEY: None,

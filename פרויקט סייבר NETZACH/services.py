@@ -419,9 +419,15 @@ class ChatService(BaseService):
     def start_video_call(self, room_id):
         if self.gui_state.get_state(StateKey.ACTIVE_CALL_ROOM_ID): return
         self.gui_state.set_state(StateKey.ACTIVE_CALL_ROOM_ID, room_id)
-        self.gui_state.set_state(StateKey.CALL_ESTABLISHED, True)
+        self.gui_state.set_state(StateKey.OPEN_CAMERA, True)
 
         public_key_pem = self._get_or_create_call_keys()
+
+        room = self.rooms.get(str(room_id))
+        if room:
+            my_p_id = str(self.gui_state.get_state(StateKey.PUBLIC_ID))
+            room.call_participants[my_p_id] = public_key_pem.hex()
+
         self.dispatcher.send_msg(MsgType.START_CALL, {
             Contract.ROOM_ID: room_id,
             Contract.PUBLIC_CALL_KEY: public_key_pem.hex()
@@ -430,8 +436,16 @@ class ChatService(BaseService):
     def join_video_call(self, room_id):
         if self.gui_state.get_state(StateKey.ACTIVE_CALL_ROOM_ID): return
         self.gui_state.set_state(StateKey.ACTIVE_CALL_ROOM_ID, room_id)
+        self.gui_state.set_state(StateKey.OPEN_CAMERA, True)
+
 
         public_key_pem = self._get_or_create_call_keys()
+
+        room = self.rooms.get(str(room_id))
+        if room:
+            my_p_id = str(self.gui_state.get_state(StateKey.PUBLIC_ID))
+            room.call_participants[my_p_id] = public_key_pem.hex()
+
         self.dispatcher.send_msg(MsgType.JOIN_CALL, {
             Contract.ROOM_ID: room_id,
             Contract.PUBLIC_CALL_KEY: public_key_pem.hex()
@@ -445,14 +459,22 @@ class ChatService(BaseService):
     def handle_start_call_response(self, data, code):
         if code == MsgCodes.SUCCESS:
             self.gui_state.set_state(StateKey.PENDING_UDP_TOKEN, data.get(Contract.UDP_TOKEN))
+            self.gui_state.set_state(StateKey.CALL_ESTABLISHED, True)
         else:
-            self.gui_state.set_state(StateKey.CALL_ESTABLISHED, False)
-
             self.clear_call_state()
 
     def handle_join_call_response(self, data, code):
         if code == MsgCodes.SUCCESS:
             self.gui_state.set_state(StateKey.PENDING_UDP_TOKEN, data.get(Contract.UDP_TOKEN))
+            self.gui_state.set_state(StateKey.CALL_ESTABLISHED, True)
+
+            room_id = str(data.get(Contract.ROOM_ID))
+            room = self.rooms.get(room_id)
+            if room:
+                for p in data.get(Contract.PARTICIPANTS, []):
+                    p_id = str(p.get(Contract.PUBLIC_ID))
+                    room.call_participants[p_id] = p.get(Contract.PUBLIC_CALL_KEY)
+
         else:
             self.clear_call_state()
 
@@ -467,7 +489,9 @@ class ChatService(BaseService):
         if data:
             p_id = str(data.get(Contract.PUBLIC_ID))
             room.call_participants[p_id] = data.get(Contract.PUBLIC_CALL_KEY)
-            self._attempt_key_rotation(room)
+
+            if self.gui_state.get_state(StateKey.PUBLIC_ID) == data.get(Contract.DISTRIBUTOR_ID):
+                self._attempt_key_rotation(room)
 
     def handle_user_left_call(self, data, code):
         room = self.rooms.get(str(data.get(Contract.ROOM_ID)))
@@ -478,10 +502,10 @@ class ChatService(BaseService):
 
     # --- 4. מנוע אבטחה ורוטציית מפתחות ---
     def _attempt_key_rotation(self, room):
-        if not room.call_participants: return
-        distributor_p_id = min(room.call_participants.keys())
-        if str(self.gui_state.get_state(StateKey.PUBLIC_ID)) == str(distributor_p_id):
-            self._perform_key_rotation(room.room_id)
+        if not room.call_participants or len(room.call_participants) <= 1:
+            return
+
+        self._perform_key_rotation(room.room_id)
 
     def _perform_key_rotation(self, room_id):
         room = self.rooms.get(room_id)
@@ -529,6 +553,7 @@ class ChatService(BaseService):
             self.gui_state.get_state(StateKey.PRIVATE_CALL_KEY),
             password=None
         )
+
         try:
             decrypted_key = private_key.decrypt(bytes.fromhex(encrypted_key_hex), padding.OAEP(
                 mgf=padding.MGF1(algorithm=hashes.SHA256()),
@@ -559,6 +584,7 @@ class ChatService(BaseService):
         self.gui_state.set_state(StateKey.ACTIVE_CALL_ROOM_ID, None)
         self.gui_state.set_state(StateKey.ACTIVE_MEDIA_KEY, None)
         self.gui_state.set_state(StateKey.PENDING_UDP_TOKEN, None)
+        self.gui_state.set_state(StateKey.OPEN_CAMERA, False)
         self.gui_state.set_state(StateKey.CALL_ESTABLISHED, False)
 
 class AuthService(BaseService):

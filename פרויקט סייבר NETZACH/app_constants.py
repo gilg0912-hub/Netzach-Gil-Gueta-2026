@@ -51,6 +51,7 @@ class StateKey(StrEnum):
     PUBLIC_CALL_KEY = 'public_call_key'
     PRIVATE_CALL_KEY = 'private_call_key'
 
+    OPEN_CAMERA = 'open_camera'
     CALL_ESTABLISHED = 'call_established'
     ACTIVE_CALL_ROOM_ID ='active_call_room_id'
     ACTIVE_MEDIA_KEY = 'active_media_key'
@@ -231,6 +232,7 @@ class Contract(StrEnum):
     CREATED_BY = 'created_by'
     INVITE_CODE = 'invite_code'
 
+    DISTRIBUTOR_ID = 'distributor_id'
     IS_CALL_ACTIVE = 'is_call_active'
     PUBLIC_CALL_KEY = 'public_call_key'
     MEDIA_KEY = 'media_key'

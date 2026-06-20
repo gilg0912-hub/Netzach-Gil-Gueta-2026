@@ -310,14 +310,23 @@ class ChatManager:
     def validate_udp_join(self, room_id, token):
         target_room = self._find_room_by_id(room_id)
         if not target_room:
+            print(f"[Debug] Room {room_id} NOT FOUND.")
             return False
 
         with target_room.lock:
+            # כאן הדיבאג: נדפיס את מה שאנחנו מחפשים לעומת מה שיש במילון
+            available_tokens = list(target_room.expected_udp_tokens.keys())
+
+            # הדפסה שתראה לנו בדיוק מה לא תואם
+            print(f"[DEBUG AUTH]")
+            print(f"  Looking for: '{token}' (Type: {type(token)})")
+            print(f"  Available:   {available_tokens}")
+
             if token in target_room.expected_udp_tokens:
-                # האסימון תקין! המשתמש מורשה.
-                # אנחנו מוחקים את האסימון כדי שלא ישתמשו בו שוב (Replay Attack)
                 del target_room.expected_udp_tokens[token]
                 return True
+
+        print(f"[DEBUG AUTH] FAILED: Token '{token}' not in list.")
         return False
 
     def _find_room_by_id(self, room_id):
@@ -345,39 +354,56 @@ class ChatManager:
 
         with target_room.lock:
             # טיפול ב-START_CALL
+            # טיפול ב-START_CALL (יוצר השיחה הוא המשתמש הראשון והוותיק ביותר)
             if msg_type == MsgType.START_CALL:
                 if target_room.is_call_active:
                     return ResponseFactory.error(msg_type)
 
                 target_room.is_call_active = True
+                target_room.call_participants_order = [client.p_id]
                 target_room.distributor_p_id = client.p_id
-                target_room.active_participants = [client.p_id]
+                target_room.call_keys = {client.p_id: payload.get(Contract.PUBLIC_CALL_KEY)}
 
-                # 🟢 תיקון: הפצה לכל חברי החדר בצ'אט (ולא רק למי שבשיחה)
                 target_room.broadcast(
                     broadcast_payload={Contract.ROOM_ID: room_id, Contract.CALL_STATE: True},
-                    sender_p_id=client.p_id,  # היוזם יקבל Success ב-TCP Response, השאר יקבלו Broadcast
+                    sender_p_id=client.p_id,
                     msg_type=MsgType.CALL_STATE
                 )
 
-            # טיפול ב-JOIN_CALL
             elif msg_type == MsgType.JOIN_CALL:
                 if not target_room.is_call_active:
                     return ResponseFactory.error(msg_type, MsgCodes.NOT_FOUND)
 
-                target_room.active_participants.append(client.p_id)
+                my_key = payload.get(Contract.PUBLIC_CALL_KEY)
 
-                # broadcast לכל המשתתפים בשיחה
+                # 1. איסוף המשתתפים הקיימים (לפני הוספת המשתמש הנוכחי) עבור ה-UI של המצטרף
+                existing_participants = [
+                    {Contract.PUBLIC_ID: pid, Contract.PUBLIC_CALL_KEY: key}
+                    for pid, key in target_room.call_keys.items()
+                ]
+
+                # 2. עדכון הנתונים בשרת
+                target_room.call_keys[client.p_id] = my_key
+                if client.p_id not in target_room.call_participants_order:
+                    target_room.call_participants_order.append(client.p_id)
+
+                # הוותיק ביותר נשאר הדיסטריביוטור
+                target_room.distributor_p_id = target_room.call_participants_order[0]
+
+                # 3. שידור לשאר המשתתפים (כדי שהדיסטריביוטור יידע להצפין לו מפתח)
                 self._broadcast_to_call(target_room, MsgType.USER_JOINED_CALL, {
                     Contract.ROOM_ID: room_id,
+                    Contract.DISTRIBUTOR_ID: target_room.distributor_p_id,
                     Contract.PUBLIC_ID: client.p_id,
-                    Contract.PUBLIC_CALL_KEY: payload.get(Contract.PUBLIC_CALL_KEY)
-                })
+                    Contract.PUBLIC_CALL_KEY: my_key
+                }, sender_p_id=client.p_id)
 
-        return ResponseFactory.create(msg_type, MsgCodes.SUCCESS, {
-            Contract.ROOM_ID: room_id,
-            Contract.UDP_TOKEN: udp_token
-        })
+
+            return ResponseFactory.create(msg_type, MsgCodes.SUCCESS, {
+                Contract.ROOM_ID: room_id,
+                Contract.UDP_TOKEN: udp_token,
+                Contract.PARTICIPANTS: existing_participants if msg_type == MsgType.JOIN_CALL else None
+            })
 
     def handle_update_room_media_keys(self, client, payload):
         room_id = payload.get(Contract.ROOM_ID)
@@ -385,30 +411,34 @@ class ChatManager:
         env = self._get_env_by_role(client.role_config)
         target_room = self.rooms[env].get(room_id)
 
-        if not target_room or client.p_id != target_room.distributor_p_id:
-            print(f"[Security Alert] Unauthorized key update attempt by {client.p_id}")
+        if not target_room or not target_room.call_keys:
             return ResponseFactory.error(MsgType.UPDATE_ROOM_MEDIA_KEY, MsgCodes.ACCESS_DENIED)
 
-        # השרת רץ על המילון ומפיץ לכל p_id את ה-Media Key הספציפי שהוצפן עבורו ב-RSA
-        for target_pid, encrypted_key in keys_map.items():
+        # 1. בדיקת הרשאות (רק הדיסטריביוטור יכול לעדכן מפתחות)
+        if client.p_id != target_room.distributor_p_id:
+            print(f"[Security Alert] Unauthorized keys update attempt by {client.p_id}.")
+            return ResponseFactory.error(MsgType.UPDATE_ROOM_MEDIA_KEY, MsgCodes.ACCESS_DENIED)
 
-            delivery_packet = ResponseFactory.create(
+        # 2. הפצה לכל משתתף את המפתח המוצפן המיועד לו
+        for p_id, encrypted_key in keys_map.items():
+            packet = ResponseFactory.create(
                 msg_type=MsgType.DELIVER_CALL_MEDIA_KEY,
                 code=MsgCodes.SUCCESS,
                 raw_data={
                     Contract.ROOM_ID: room_id,
-                    "encrypted_media_key": encrypted_key
+                    "encrypted_media_key": encrypted_key,
+                    Contract.SENDER_PID: client.p_id
                 }
             )
-
-            # שליחה ישירה ב-TCP לכל לקוח יעד
             try:
-                self.send_to_user(target_pid, delivery_packet)
+                self.send_to_user(p_id, packet)
             except Exception as e:
-                print(f"[Key Distribution Error] Failed to send key to {target_pid}: {e}")
+                print(f"Error sending key to {p_id}: {e}")
 
-        # ה-Host אינו מצפה לתשובה חזרה מהשרת עבור הודעה זו
-        return None
+        # 3. החזרת אישור הצלחה ללקוח המעדכן
+        return ResponseFactory.create(MsgType.UPDATE_ROOM_MEDIA_KEY, MsgCodes.SUCCESS, {
+            Contract.ROOM_ID: room_id
+        })
 
     def handle_leave_call(self, client, payload):
         room_id = payload.get(Contract.ROOM_ID)
@@ -422,44 +452,36 @@ class ChatManager:
             if not target_room.is_call_active:
                 return ResponseFactory.error(MsgType.LEAVE_CALL, MsgCodes.NOT_FOUND)
 
-            is_distributor = (client.p_id == target_room.distributor_p_id)
+            # הסרת המפתחות שלו מהחדר
+            target_room.call_keys.pop(client.p_id, None)
 
-            # הסרת המשתמש מהרשימה הפעילה
-            if client.p_id in target_room.active_participants:
-                target_room.active_participants.remove(client.p_id)
+            # הסרת המשתמש מרשימת הוותק
+            if client.p_id in target_room.call_participants_order:
+                target_room.call_participants_order.remove(client.p_id)
 
-            # לוגיקה במקרה שהמשתמש הוא Host
-            if is_distributor:
-
-                # תרחיש 2: משתמש Standard (דמוקרטי) עזב - עושים Handover
-                if len(target_room.active_participants) > 0:
-                    target_room.distributor_p_id = target_room.active_participants[
-                            0] if target_room.active_participants else None
-
-                    self._broadcast_to_call(target_room, MsgType.USER_LEFT_CALL, {
-                        Contract.ROOM_ID: room_id,
-                        Contract.PUBLIC_ID: client.p_id,
-                    })
-                else:
-                    # החדר התרוקן לגמרי
-                    target_room.is_call_active = False
-                    target_room.distributor_p_id = None
-                    self._broadcast_to_call(target_room, MsgType.CALL_STATE, {Contract.CALL_STATE: False})
-
-
-
+            # אם לא נשאר אף אחד בשיחה, סוגרים אותה ומאפסים
+            if len(target_room.call_participants_order) == 0:
+                target_room.is_call_active = False
+                target_room.distributor_p_id = None
+                target_room.broadcast(
+                    broadcast_payload={Contract.ROOM_ID: room_id, Contract.CALL_STATE: False},
+                    sender_p_id=client.p_id,
+                    msg_type=MsgType.CALL_STATE
+                )
             else:
-                # תרחיש 3: משתמש רגיל (לא Host) עזב
+                target_room.distributor_p_id = target_room.call_participants_order[0]
+
                 self._broadcast_to_call(target_room, MsgType.USER_LEFT_CALL, {
                     Contract.ROOM_ID: room_id,
-                    Contract.PUBLIC_ID: client.p_id
+                    Contract.PUBLIC_ID: client.p_id,
+                    Contract.DISTRIBUTOR_ID: target_room.distributor_p_id
                 })
 
         return ResponseFactory.create(MsgType.LEAVE_CALL, MsgCodes.SUCCESS, {Contract.ROOM_ID: room_id})
 
-    def _broadcast_to_call(self, room, msg_type, raw_data= {}, sender_p_id= None):
+    def _broadcast_to_call(self, room, msg_type, raw_data={}, sender_p_id=None):
         packet = ResponseFactory.create(msg_type, MsgCodes.SUCCESS, raw_data)
-        for p_id in room.active_participants:
+        for p_id in room.call_keys:
             try:
                 if sender_p_id != p_id:
                     self.send_to_user(p_id, packet)
@@ -484,9 +506,11 @@ class ChatRoom:
         self.send_func = send_func
         self.expected_udp_tokens = {}
 
+
         self.distributor_p_id = None
         self.is_call_active = False
-        self.active_participants = []  # הוסף זאת
+        self.call_participants_order = []  # 🟢 שורה חדשה: מעקב דינמי אחר סדר המצטרפים לשיחה
+        self.call_keys = {}
 
         self.lock = threading.RLock()
 
