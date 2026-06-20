@@ -424,7 +424,6 @@ class MediaCommunicator(threading.Thread):
         output_stream.close()
 
     def stop(self):
-        # 1. כיבוי ה-Flag הראשי - גורם לכל הת'רדים לדעת שעליהם לצאת מהלולאה
         self.is_active.clear()
 
         try:
@@ -434,19 +433,32 @@ class MediaCommunicator(threading.Thread):
                 sender_id=self.my_p_id
             )
             self.udp_sock.sendto(leave_packet, self.server_address)
+        except Exception:
+            pass
+
+        # וידוא שה-thread הראשי (run) באמת יצא לפני שסוגרים את הסוקט
+        if self.is_alive():
+            self.join(timeout=1.5)
+
+        try:
             self.udp_sock.close()
         except Exception:
             pass
 
-        # 2. 🟢 וידוא סגירת סטרימים: ממתינים שהת'רדים יסיימו בצורה חלקה ויסגרו את הצינורות שלהם
         if self.record_thread and self.record_thread.is_alive():
             self.record_thread.join(timeout=1.0)
         if self.play_thread and self.play_thread.is_alive():
             self.play_thread.join(timeout=1.0)
 
-        # 3. רק לאחר שאין אף ת'רד רקע שנוגע ברכיבי השמע, בטוח לסגור את ה-Instance
         try:
             self.pyaudio_instance.terminate()
-            print("[Audio System] Closed successfully without leaks.")
         except Exception:
             pass
+
+        # ניקוי תורים — מונע זליגת אודיו/וידאו ישן לשיחה הבאה
+        for q in (self.audio_queue, self.frame_queue):
+            while not q.empty():
+                try:
+                    q.get_nowait()
+                except queue.Empty:
+                    break

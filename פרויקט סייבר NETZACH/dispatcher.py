@@ -39,9 +39,17 @@ class MsgDispatcher:
                 if not keep_locked:
                     self.gui_state.set_state(StateKey.RELEASE_BTNS, 'normal')
 
-            except TypeError as e:
+
+            except Exception as e:
+
+                # 🟢 תיקון: תופסים כל שגיאה ולא רק TypeError
+
+                print(f"[Dispatcher Critical Error] in {msg_type}: {e}")
+
                 traceback.print_exc()
-                print(f"Dispatcher Error in {msg_type}: {e}")
+                self.gui_state.set_state(StateKey.RELEASE_BTNS, 'normal')
+
+                self.gui_state.set_state(StateKey.LOADING_STATUS, False)
 
     def _handle_general_msg(self, data, code):
         self.gui_state.set_state(StateKey.LOADING_STATUS, False)

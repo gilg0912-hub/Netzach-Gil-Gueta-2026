@@ -78,6 +78,11 @@ class GUI_State:
                 still_alive.append(ref)
         self.listeners[key] = still_alive
 
+    def unregister(self, key: StateKey, listener):
+        if key in self.state:
+            # בונה את הרשימה מחדש ומעיפה רק את הפונקציה הספציפית שביקשת
+            self.listeners[key] = [r for r in self.listeners[key] if r() is not None and r() != listener]
+
 SYSTEM_STATE_MAP = {
     MsgCodes.CONNECTION_LOST: {
         StateKey.CONNECTED: False,

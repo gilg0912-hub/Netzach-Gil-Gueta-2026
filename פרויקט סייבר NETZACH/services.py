@@ -36,6 +36,7 @@ class ChatService(BaseService):
         self.dispatcher.register(MsgType.RECEIVE_MSG, self.handle_receive_msg)
         self.gui_state.register(StateKey.CONNECTED, self._on_connection_changed)
         self.dispatcher.register(MsgType.CALL_STATE, self.room_video_call_update)
+        self.dispatcher.register(MsgType.LEAVE_CALL, self._handle_leave_call)
 
         # --- ניהול שיחות וידאו ---
         self.dispatcher.register(MsgType.START_CALL, self.handle_start_call_response)
@@ -453,7 +454,6 @@ class ChatService(BaseService):
 
     def leave_video_call(self, room_id):
         self.dispatcher.send_msg(MsgType.LEAVE_CALL, {Contract.ROOM_ID: room_id})
-        self.clear_call_state()
 
     # --- 3. Handlers לאירועי שיחה ---
     def handle_start_call_response(self, data, code):
@@ -478,6 +478,10 @@ class ChatService(BaseService):
         else:
             self.clear_call_state()
 
+    def _handle_leave_call(self, data, code):
+        if code == MsgCodes.SUCCESS:
+            self.gui_state.set_state(StateKey.ROOM_VIDEO_STATUS, data.get(Contract.CALL_STATE))
+            self.clear_call_state()
     def handle_user_joined_call(self, data, code):
         room_id = str(data.get(Contract.ROOM_ID))
 

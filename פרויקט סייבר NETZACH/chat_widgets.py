@@ -528,10 +528,15 @@ class VideoCallPanel(ctk.CTkFrame):
         self.after(33, self._update_local_ui_loop)  # ~30 FPS
 
     def destroy(self):
+        self.gui_state.unregister(StateKey.CALL_ESTABLISHED, self._prepare_camera)
+        self.gui_state.unregister(StateKey.ACTIVE_MEDIA_KEY, self._update_call_key)
+
         self.is_running = False
         if self.media_communicator:
             self.media_communicator.stop()
             self.media_communicator = None
+
+        # 3. סיום תהליך השמדת הפאנל
         super().destroy()
 
     def _disconnect(self):
