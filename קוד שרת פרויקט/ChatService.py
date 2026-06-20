@@ -7,7 +7,7 @@ import threading
 import os
 
 class ChatManager:
-    def __init__(self, db, send_to_client, send_to_user):
+    def __init__(self, db, send_to_client, send_to_user, udp_server):
         self.db = db
         self.rooms = {
             "educational": {},
@@ -16,6 +16,8 @@ class ChatManager:
 
         self.send_to_client = send_to_client
         self.send_to_user = send_to_user
+        self.udp_media_server = udp_server
+        self.udp_media_server.set_auth_validator(self.validate_udp_join)
 
         self.manager_lock = threading.Lock()
 
@@ -366,7 +368,7 @@ class ChatManager:
 
                 target_room.broadcast(
                     broadcast_payload={Contract.ROOM_ID: room_id, Contract.CALL_STATE: True},
-                    sender_p_id=client.p_id,
+                    sender_p_id= None,
                     msg_type=MsgType.CALL_STATE
                 )
 
@@ -452,25 +454,25 @@ class ChatManager:
             if not target_room.is_call_active:
                 return ResponseFactory.error(MsgType.LEAVE_CALL, MsgCodes.NOT_FOUND)
 
-            # הסרת המפתחות שלו מהחדר
             target_room.call_keys.pop(client.p_id, None)
 
-            # הסרת המשתמש מרשימת הוותק
             if client.p_id in target_room.call_participants_order:
                 target_room.call_participants_order.remove(client.p_id)
 
-            # אם לא נשאר אף אחד בשיחה, סוגרים אותה ומאפסים
+            # 🟢 התיקון הקריטי: ניקוי כפוי של ה-UDP server, לא תלוי בהגעת פאקטת UDP
+            if self.udp_media_server:
+                self.udp_media_server.force_remove_client(client.p_id, str(room_id))
+
             if len(target_room.call_participants_order) == 0:
                 target_room.is_call_active = False
                 target_room.distributor_p_id = None
                 target_room.broadcast(
                     broadcast_payload={Contract.ROOM_ID: room_id, Contract.CALL_STATE: False},
-                    sender_p_id=client.p_id,
+                    sender_p_id=None,
                     msg_type=MsgType.CALL_STATE
                 )
             else:
                 target_room.distributor_p_id = target_room.call_participants_order[0]
-
                 self._broadcast_to_call(target_room, MsgType.USER_LEFT_CALL, {
                     Contract.ROOM_ID: room_id,
                     Contract.PUBLIC_ID: client.p_id,

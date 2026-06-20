@@ -527,15 +527,16 @@ class VideoCallPanel(ctk.CTkFrame):
             pass
         self.after(33, self._update_local_ui_loop)  # ~30 FPS
 
-    def _disconnect(self):
-        if self.media_communicator:
-            self.media_communicator.stop()
-        self.chat_service.leave_video_call(self.gui_state.get_state(StateKey.ACTIVE_CALL_ROOM_ID))
-        self.destroy()
-
     def destroy(self):
         self.is_running = False
+        if self.media_communicator:
+            self.media_communicator.stop()
+            self.media_communicator = None
         super().destroy()
+
+    def _disconnect(self):
+        self.chat_service.leave_video_call(self.gui_state.get_state(StateKey.ACTIVE_CALL_ROOM_ID))
+        self.destroy()
 
     def _rearrange_videos(self):
         active = [self.my_video_container] + [item["container"] for item in self.remote_videos.values()]
@@ -725,7 +726,10 @@ class ChatHeader(ctk.CTkFrame):
         self.gui_state.register(StateKey.CURRENT_ROOM_ID, self._on_room_changed)
         self.gui_state.register(StateKey.ROOMS_UI_SIGNAL, self._on_room_updated)
         self.gui_state.register(StateKey.ROOM_VIDEO_STATUS, self._on_video_status_changed)
+        self.gui_state.register(StateKey.RELEASE_BTNS, self._set_video_btn_state)
 
+    def _set_video_btn_state(self, s):
+        self.video_btn.configure(state= s)
     def _on_video_status_changed(self, updated_room_id):
         if self.current_room_obj and str(self.current_room_obj.room_id) == str(updated_room_id):
             self._update_labels(self.current_room_obj)

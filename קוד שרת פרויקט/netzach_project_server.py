@@ -48,7 +48,10 @@ class Server:
 
         #self.start_ai_service()
 
-        self.chat_manager = ChatManager(self.db, self.send_to_client, self.send_to_user)
+        self.udp_server = UDPMediaServer(host=self.HOST, port=8821)
+        self.udp_server.start()
+
+        self.chat_manager = ChatManager(self.db, self.send_to_client, self.send_to_user, self.udp_server)
 
         self.clients={}
         self.online_users= {}
@@ -90,10 +93,6 @@ class Server:
             t = threading.Thread(target=self._logic_worker_loop, daemon=True, name=f"Worker-{i + 1}")
             t.start()
             self.workers.append(t)
-
-        self.udp_server = UDPMediaServer(host= self.HOST, port=8821)
-        self.udp_server.set_auth_validator(self.chat_manager.validate_udp_join)
-        self.udp_server.start()
 
     def _logic_worker_loop(self):
         while True:

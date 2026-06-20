@@ -281,6 +281,26 @@ class MediaCommunicator(threading.Thread):
 
         while self.is_active.is_set():
             try:
+                current_cipher = self._get_cipher()
+                if not current_cipher:
+                    time.sleep(0.1)
+                    continue  # 🛑 כאן הבעיה
+
+                now = time.time()
+                if now - last_join_time > 3.0:
+                    join_packet = MediaProtocol.pack(
+                        pkt_type=MediaProtocol.TYPE_JOIN,
+                        room_id=self.room_id,
+                        sender_id=self.my_p_id,
+                        payload=self.udp_token.encode('utf-8')
+                    )
+                    self.udp_sock.sendto(join_packet, self.server_address)
+                    last_join_time = now
+
+                data, addr = self.udp_sock.recvfrom(65535)
+            except Exception as e:
+                pass
+            try:
                 # 🛑 תיקון שגיאה 1: מניעת חנק מעבד. אם אין מפתח, ישנים 100 מילישניות וממשיכים
                 current_cipher = self._get_cipher()
                 if not current_cipher:
