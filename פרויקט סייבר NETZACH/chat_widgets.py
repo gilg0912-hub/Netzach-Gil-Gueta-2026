@@ -735,9 +735,15 @@ class ChatHeader(ctk.CTkFrame):
 
     def _set_video_btn_state(self, s):
         self.video_btn.configure(state= s)
-    def _on_video_status_changed(self, updated_room_id):
+
+    def _on_video_status_changed(self, dict):
+        if not dict:
+            return
+        updated_room_id = dict.get(Contract.ROOM_ID)
         if self.current_room_obj and str(self.current_room_obj.room_id) == str(updated_room_id):
+            print('A')
             self._update_labels(self.current_room_obj)
+        print(updated_room_id, 'A')
 
     def _open_room_profile(self):
         if self.current_room_obj:

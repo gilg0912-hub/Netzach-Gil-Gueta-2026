@@ -35,7 +35,7 @@ class NavSidebar(ctk.CTkFrame):
     def _on_room_click(self, room_id):
         self.gui_state.set_state(StateKey.CURRENT_ROOM_ID, room_id)
 
-1
+
 
 class Menu(ctk.CTkFrame):
     def __init__(self, parent, gui_state, **kwargs):
@@ -52,20 +52,20 @@ class Menu(ctk.CTkFrame):
         self.grid_columnconfigure(1, weight=1)
 
     def add_btn(self, text, command_func=None):
-        indicator = ctk.CTkFrame(self, width=4, height=24, fg_color="transparent", corner_radius=0)
+        indicator = ctk.CTkFrame(self, width=4, height=20, fg_color="transparent", corner_radius=0)
         btn = ctk.CTkButton(
             self,
             text=text,
             text_color=("#0F172A", "#C9D1D9"),
-            height=36,
+            height=20,
             fg_color="transparent",
             hover_color=("#F1F5F9", "#475569"),
             font=('Heebo', 18),
             command=lambda i=self.rows, f=command_func: self.handle_click(i, f)
         )
 
-        indicator.grid(row=self.rows, column=0, pady=10, sticky="ns")
-        btn.grid(row=self.rows, column=1, pady=10, padx=30, sticky="ew")
+        indicator.grid(row=self.rows, column=0, pady=5, sticky="ns")
+        btn.grid(row=self.rows, column=1, pady=5, padx=30, sticky="ew")
 
         self.indicators.append(indicator)
         self.buttons.append(btn)

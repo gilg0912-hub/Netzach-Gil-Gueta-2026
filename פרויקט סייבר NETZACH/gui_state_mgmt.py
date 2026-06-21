@@ -42,7 +42,7 @@ class GUI_State:
             StateKey.PENDING_UDP_TOKEN: None,
             StateKey.PUBLIC_CALL_KEY: None,
             StateKey.PRIVATE_CALL_KEY: None,
-            StateKey.ROOM_VIDEO_STATUS: False,
+            StateKey.ROOM_VIDEO_STATUS: None,
             }
         # יצירת רשימת מאזינים לכל מפתח
         self.listeners = {k: [] for k in self.state.keys()}

@@ -251,7 +251,7 @@ class ChatService(BaseService):
 
         if target_room:
             target_room.is_call_active = is_call_active
-            self.gui_state.set_state(StateKey.ROOM_VIDEO_STATUS, room_id)
+            self.gui_state.set_state(StateKey.ROOM_VIDEO_STATUS, {Contract.ROOM_ID: target_room.room_id, Contract.TIMESTAMP: time.time()})
 
     def fetch_older_messages(self, room_id, oldest_msg_id=None):
         payload = {
@@ -480,7 +480,7 @@ class ChatService(BaseService):
 
     def _handle_leave_call(self, data, code):
         if code == MsgCodes.SUCCESS:
-            self.gui_state.set_state(StateKey.ROOM_VIDEO_STATUS, data.get(Contract.CALL_STATE))
+            self.gui_state.set_state(StateKey.ROOM_VIDEO_STATUS, {Contract.ROOM_ID: data.get(Contract.ROOM_ID), Contract.TIMESTAMP: time.time()})
             self.clear_call_state()
     def handle_user_joined_call(self, data, code):
         room_id = str(data.get(Contract.ROOM_ID))
@@ -500,9 +500,18 @@ class ChatService(BaseService):
     def handle_user_left_call(self, data, code):
         room = self.rooms.get(str(data.get(Contract.ROOM_ID)))
         p_id = str(data.get(Contract.PUBLIC_ID))
+
         if room and p_id in room.call_participants:
             del room.call_participants[p_id]
-            self._attempt_key_rotation(room)
+
+            if not room.call_participants:
+                room.is_call_active = False
+                self.gui_state.set_state(StateKey.ROOM_VIDEO_STATUS, {Contract.ROOM_ID: room.room_id, Contract.TIMESTAMP: time.time()})
+                return
+
+            # 🟢 רק ה-distributor מבצע רוטציית מפתח, בדיוק כמו ב-handle_user_joined_call
+            if self.gui_state.get_state(StateKey.PUBLIC_ID) == data.get(Contract.DISTRIBUTOR_ID):
+                self._attempt_key_rotation(room)
 
     # --- 4. מנוע אבטחה ורוטציית מפתחות ---
     def _attempt_key_rotation(self, room):
