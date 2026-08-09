@@ -5,4 +5,5 @@
 
 # Python caching
 __pycache__/
-*.pyc
+*.pyc".idea/" 
+"__pycache__/" 
